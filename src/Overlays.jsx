@@ -290,6 +290,32 @@ function MaterialForm({ onClose }) {
   )
 }
 
+/** Add a tool with just a name. It starts at quantity 0 and condition Good; stock is added later with Stock in. */
+function ToolForm({ onClose }) {
+  const { db, update, toast } = useApp()
+  const [name, setName] = useState('')
+  const [err, setErr] = useState('')
+  const norm = (s) => s.trim().replace(/\s+/g, ' ').toLowerCase()
+  const save = () => {
+    const n = name.trim().replace(/\s+/g, ' ')
+    if (!n) return setErr('Enter the tool name.')
+    const dup = db.materials.find((m) => norm(m.name) === norm(n))
+    if (dup) return setErr(`“${dup.name}” is already in the list.`)
+    update((d) => { d.materials.push({ id: uid('m'), name: n, category: 'Tools', unit: 'NOS', opening: 0, min: 0, condition: 'good', conditionLog: [] }) }, `New tool added: ${n}`, 'add')
+    toast('Tool added'); onClose()
+  }
+  return (
+    <Modal title="Add a tool" sub="Just the name is enough. Add the quantity later with Stock in." icon={Wrench} onClose={onClose} width={480}
+      footer={<><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn icon={Plus} onClick={save}>Add tool</Btn></>}>
+      <form onSubmit={(e) => { e.preventDefault(); save() }}>
+        <Field label="Tool name"><input value={name} onChange={(e) => { setName(e.target.value); setErr('') }} placeholder="e.g. Angle Grinder" autoFocus aria-invalid={!!err} /></Field>
+      </form>
+      {err && <div className="formerr"><AlertTriangle size={16} />{err}</div>}
+      <p className="muted small">It starts with quantity 0 and condition Good.</p>
+    </Modal>
+  )
+}
+
 // ======================= AI document reading =======================
 /** Upload → "reading" animation → proposes the expiry date found on the document. */
 function useDocUpload({ entity, id, docKey, reads, label }) {
@@ -656,6 +682,6 @@ function DriverForm({ id, onClose }) {
 
 const MAP = {
   entry: EntryForm, movement: MovementDrawer, material: MaterialDrawer, materialForm: MaterialForm,
-  vehicle: VehicleDrawer, vehicleForm: VehicleForm, maint: MaintForm, renew: RenewModal, readDoc: ReadDocModal, toolCondition: ToolConditionModal,
+  vehicle: VehicleDrawer, vehicleForm: VehicleForm, maint: MaintForm, renew: RenewModal, readDoc: ReadDocModal, toolCondition: ToolConditionModal, toolForm: ToolForm,
   driver: DriverDrawer, driverForm: DriverForm, doc: (p) => <DocViewer fileRef={p.fileRef} title={p.title} onClose={p.onClose} />,
 }

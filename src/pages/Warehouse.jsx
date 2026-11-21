@@ -130,7 +130,7 @@ function Tools() {
   const atSites = (id) => sites.reduce((a, s) => a + (s.tools.find((t) => t.id === id)?.q || 0), 0)
   return <>
     <section className="card flush">
-      <header className="card-h pad"><div><h3>All tools</h3><p className="muted small">Press a condition to change it. Every change is kept in the tool's history.</p></div></header>
+      <header className="card-h pad"><div><h3>All tools</h3><p className="muted small">Press a condition to change it. Every change is kept in the tool's history.</p></div><Btn size="sm" icon={Plus} onClick={() => open('toolForm')}>Add tool</Btn></header>
       <div className="tablewrap">
         <table className="tbl">
           <thead><tr><th>Tool</th><th className="r">In store</th><th className="r">At sites</th><th>Condition</th></tr></thead>
