@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Boxes, ArrowDownToLine, ArrowUpFromLine, Truck, Users, Wrench, BellRing, FileSpreadsheet, FileDown, CalendarRange } from 'lucide-react'
+import { Boxes, ArrowDownToLine, ArrowUpFromLine, Truck, Users, Wrench, BellRing, FileSpreadsheet, FileDown, CalendarRange, Hammer } from 'lucide-react'
 import { useApp } from '../store'
 import { balances, stockStatus, STOCK_STATUS, KINDS, fmtDate, daysUntil, CONDITIONS, currentValue, allExpiries, EXPIRY, addDays, TODAY } from '../data'
 import { PageHeader, Btn, cx } from '../ui'
@@ -13,7 +13,50 @@ const REPORTS = [
   { id: 'drivers', label: 'Drivers', icon: Users, desc: 'Licenses and driver cards', dated: false },
   { id: 'maintenance', label: 'Maintenance', icon: Wrench, desc: 'Workshop costs per vehicle', dated: true },
   { id: 'reminders', label: 'Expiry list', icon: BellRing, desc: 'Everything that expires in the next 90 days', dated: false },
+  { id: 'tools', label: 'Monthly tools', icon: Hammer, desc: 'Tools in and out for one month', monthly: true },
 ]
+
+const monthRange = (ym) => { const [y, m] = ym.split('-').map(Number); return { from: `${ym}-01`, to: `${ym}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}` } }
+const monthLabel = (ym) => new Date(ym + '-15').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
+const prevMonth = () => { const [y, m] = TODAY.split('-').map(Number); return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}` }
+
+/** Monthly tools report. Every figure comes from the recorded movements, so any past month always regenerates the same. */
+function buildTools(db, ym) {
+  const { from, to } = monthRange(ym)
+  const tools = db.materials.filter((m) => m.category === 'Tools')
+  const ids = new Set(tools.map((m) => m.id))
+  const mvs = db.movements.filter((mv) => !mv.cancelled && mv.date <= to)
+  const sum = { opening: {}, in: {}, out: {} }
+  tools.forEach((m) => { sum.opening[m.id] = m.opening; sum.in[m.id] = 0; sum.out[m.id] = 0 })
+  const atSite = {} // project -> tool -> { q, last }
+  const moves = []
+  mvs.forEach((mv) => mv.lines.forEach((l) => {
+    if (!ids.has(l.materialId)) return
+    const q = Number(l.qty) || 0
+    const isIn = KINDS[mv.kind].group === 'in'
+    if (mv.date < from) sum.opening[l.materialId] += isIn ? q : -q
+    else { sum[isIn ? 'in' : 'out'][l.materialId] += q; moves.push({ mv, l, q, isIn }) }
+    if (mv.kind !== 'purchase' && mv.project) {
+      const s = (atSite[mv.project] ||= {}); const t = (s[l.materialId] ||= { q: 0, last: null })
+      t.q += mv.kind === 'issue' ? q : -q
+      if (mv.kind === 'issue') t.last = mv.date
+    }
+  }))
+  const name = (id) => tools.find((m) => m.id === id)
+  const outstanding = []
+  Object.entries(atSite).forEach(([project, t]) => Object.entries(t).forEach(([id, x]) => { if (x.q > 0) outstanding.push([project, name(id).name, x.q, name(id).unit, x.last ? fmtDate(x.last) : '—']) }))
+  outstanding.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]))
+  const stillOut = (id) => outstanding.filter((r) => r[1] === name(id).name).reduce((a, r) => a + r[2], 0)
+  const summary = tools.map((m) => { const o = sum.opening[m.id], i = sum.in[m.id], u = sum.out[m.id]; return [m.name, m.unit, o, i, u, o + i - u, stillOut(m.id)] })
+  const movements = moves.map(({ mv, l, q, isIn }) => [fmtDate(mv.date), mv.no, name(l.materialId).name, q, isIn ? 'In' : 'Out', KINDS[mv.kind].label, mv.kind === 'purchase' ? mv.vendor || '' : mv.project || '', mv.engineer || mv.reqName || '', mv.billNo || mv.mtn || mv.reqNo || ''])
+  return {
+    sections: [
+      { title: 'Summary', columns: ['Tool', 'Unit', 'Opening', 'In', 'Out', 'Closing', 'Still out at sites'], rows: summary },
+      { title: 'Movements', columns: ['Date', 'No.', 'Tool', 'Qty', 'In / Out', 'Type', 'Site / supplier', 'Person', 'Document no.'], rows: movements, empty: 'No tools went in or out this month.' },
+      { title: 'Still out at sites at month end', columns: ['Site', 'Tool', 'Qty', 'Unit', 'Last sent'], rows: outstanding, empty: 'All tools were back in the store.' },
+    ],
+  }
+}
 
 function build(id, db, from, to) {
   const inRange = (d) => (!from || d >= from) && (!to || d <= to)
@@ -56,16 +99,29 @@ export default function Reports() {
   const [id, setId] = useState('stock')
   const [from, setFrom] = useState(addDays(TODAY, -30))
   const [to, setTo] = useState(TODAY)
+  const [month, setMonth] = useState(prevMonth)
   const R = REPORTS.find((r) => r.id === id)
-  const data = useMemo(() => build(id, db, R.dated ? from : null, R.dated ? to : null), [id, db, from, to, R.dated])
+  const data = useMemo(() => (R.monthly ? buildTools(db, month) : build(id, db, R.dated ? from : null, R.dated ? to : null)), [id, db, from, to, month, R.dated, R.monthly])
+  const sections = data.sections || [{ columns: data.columns, rows: data.rows, total: data.total }]
+  const rowCount = sections.reduce((a, s) => a + s.rows.length, 0)
   const title = `${R.label} report`
-  const sub = R.dated ? `${fmtDate(from)} to ${fmtDate(to)}` : `As of ${fmtDate(TODAY)}`
-  const fname = `TI_${R.label.replace(/\s+/g, '_')}_${TODAY}`
+  const generated = new Date().toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const sub = R.monthly ? monthLabel(month) : R.dated ? `${fmtDate(from)} to ${fmtDate(to)}` : `As of ${fmtDate(TODAY)}`
+  const fname = `TI_${R.label.replace(/\s+/g, '_')}_${R.monthly ? month : TODAY}`
 
   const excel = async () => {
     const XLSX = await import('xlsx')
-    const ws = XLSX.utils.aoa_to_sheet([[`T&I Construction · ${title}`], [sub], [], data.columns, ...data.rows, ...(data.total != null ? [[], ['', '', '', '', 'Total', data.total]] : [])])
-    ws['!cols'] = data.columns.map((c, i) => ({ wch: Math.min(40, Math.max(c.length, ...data.rows.map((r) => String(r[i] ?? '').length)) + 2) }))
+    const aoa = [[`T&I Construction · ${title}`], [sub + (R.monthly ? ` · Generated ${generated}` : '')]]
+    sections.forEach((s) => {
+      aoa.push([])
+      if (s.title) aoa.push([s.title.toUpperCase()])
+      aoa.push(s.columns, ...s.rows)
+      if (!s.rows.length && s.empty) aoa.push([s.empty])
+      if (s.total != null) aoa.push([], ['', '', '', '', 'Total', s.total])
+    })
+    const ws = XLSX.utils.aoa_to_sheet(aoa)
+    const widest = Math.max(...sections.map((s) => s.columns.length))
+    ws['!cols'] = Array.from({ length: widest }, (_, i) => ({ wch: Math.min(40, Math.max(10, ...sections.flatMap((s) => [s.columns[i] || '', ...s.rows.map((r) => r[i] ?? '')]).map((c) => String(c).length)) + 2) }))
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, R.label.slice(0, 30))
     XLSX.writeFile(wb, fname + '.xlsx')
@@ -74,19 +130,28 @@ export default function Reports() {
   }
   const pdf = async () => {
     const [{ jsPDF }, { default: autoTable }] = await Promise.all([import('jspdf'), import('jspdf-autotable')])
-    const doc = new jsPDF({ orientation: data.columns.length > 7 ? 'landscape' : 'portrait', unit: 'pt', format: 'a4' })
+    const doc = new jsPDF({ orientation: Math.max(...sections.map((s) => s.columns.length)) > 7 ? 'landscape' : 'portrait', unit: 'pt', format: 'a4' })
     const W = doc.internal.pageSize.getWidth()
     try { const img = await toDataUrl(logoLight); doc.addImage(img, 'PNG', 36, 26, 110, 49) } catch { /* logo optional */ }
     doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(29, 31, 35); doc.text(title, W - 36, 46, { align: 'right' })
     doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(110, 115, 122); doc.text(sub, W - 36, 62, { align: 'right' })
     doc.setDrawColor(200, 16, 46); doc.setLineWidth(2); doc.line(36, 86, W - 36, 86)
-    autoTable(doc, {
-      startY: 98, head: [data.columns], body: data.rows.map((r) => r.map((c) => (c ?? '') + '')),
-      foot: data.total != null ? [['', '', '', '', 'Total', 'SAR ' + Math.round(data.total).toLocaleString()]] : undefined,
-      styles: { fontSize: 8.5, cellPadding: 5, lineColor: [230, 231, 234], lineWidth: 0.5 },
-      headStyles: { fillColor: [31, 33, 37], textColor: 255, fontStyle: 'bold' }, footStyles: { fillColor: [245, 245, 246], textColor: [29, 31, 35], fontStyle: 'bold' },
-      alternateRowStyles: { fillColor: [249, 249, 250] }, margin: { left: 36, right: 36 },
-      didDrawPage: () => { doc.setFontSize(8); doc.setTextColor(150); doc.text(`T&I Construction · Generated ${fmtDate(TODAY)} · Page ${doc.getNumberOfPages()}`, 36, doc.internal.pageSize.getHeight() - 20) },
+    let y = 98
+    sections.forEach((s) => {
+      if (s.title) {
+        if (y > doc.internal.pageSize.getHeight() - 90) { doc.addPage(); y = 50 }
+        doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(29, 31, 35); doc.text(s.title, 36, y + 8); y += 18
+      }
+      const body = s.rows.length ? s.rows.map((r) => r.map((c) => (c ?? '') + '')) : [[{ content: s.empty || 'Nothing to show', colSpan: s.columns.length, styles: { textColor: [130, 130, 130] } }]]
+      autoTable(doc, {
+        startY: y, head: [s.columns], body,
+        foot: s.total != null ? [['', '', '', '', 'Total', 'SAR ' + Math.round(s.total).toLocaleString()]] : undefined,
+        styles: { fontSize: 8.5, cellPadding: 5, lineColor: [230, 231, 234], lineWidth: 0.5 },
+        headStyles: { fillColor: [31, 33, 37], textColor: 255, fontStyle: 'bold' }, footStyles: { fillColor: [245, 245, 246], textColor: [29, 31, 35], fontStyle: 'bold' },
+        alternateRowStyles: { fillColor: [249, 249, 250] }, margin: { left: 36, right: 36, bottom: 40 },
+        didDrawPage: () => { doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(150); doc.text(`T&I Construction · Generated ${generated} · Page ${doc.getNumberOfPages()}`, 36, doc.internal.pageSize.getHeight() - 20) },
+      })
+      y = doc.lastAutoTable.finalY + 26
     })
     doc.save(fname + '.pdf')
     update(() => {}, `${title} downloaded as PDF`, 'add')
@@ -105,19 +170,25 @@ export default function Reports() {
       </div>
       <section className="card flush">
         <div className="toolbar rep-bar">
-          <div><h3>{title}</h3><span className="muted small">{sub} · {data.rows.length} rows</span></div>
+          <div><h3>{title}</h3><span className="muted small">{sub} · {rowCount} rows</span></div>
           <span className="grow" />
           {R.dated && <div className="range"><CalendarRange size={16} /><input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} /><span>to</span><input type="date" value={to} min={from} max={TODAY} onChange={(e) => setTo(e.target.value)} /></div>}
-          <Btn kind="excel" icon={FileSpreadsheet} onClick={excel} disabled={!data.rows.length}>Excel</Btn>
-          <Btn kind="dark" icon={FileDown} onClick={pdf} disabled={!data.rows.length}>PDF</Btn>
+          {R.monthly && <div className="range"><CalendarRange size={16} /><span>Month</span><input type="month" value={month} max={TODAY.slice(0, 7)} onChange={(e) => e.target.value && setMonth(e.target.value)} aria-label="Report month" /></div>}
+          <Btn kind="excel" icon={FileSpreadsheet} onClick={excel} disabled={!rowCount}>Excel</Btn>
+          <Btn kind="dark" icon={FileDown} onClick={pdf} disabled={!rowCount}>PDF</Btn>
         </div>
         <div className="tablewrap preview">
-          <table className="tbl">
-            <thead><tr>{data.columns.map((c) => <th key={c}>{c}</th>)}</tr></thead>
-            <tbody>{data.rows.slice(0, 60).map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j} className={typeof c === 'number' ? 'num' : ''}>{typeof c === 'number' ? c.toLocaleString() : c}</td>)}</tr>)}</tbody>
-          </table>
-          {data.rows.length > 60 && <p className="muted small pad">Showing 60 of {data.rows.length} rows. The download has all of them.</p>}
-          {!data.rows.length && <p className="muted pad">Nothing in this period. Try a wider date range.</p>}
+          {sections.map((s, k) => (
+            <div key={k}>
+              {s.title && <h4 className="rep-sec">{s.title}</h4>}
+              <table className="tbl">
+                <thead><tr>{s.columns.map((c) => <th key={c}>{c}</th>)}</tr></thead>
+                <tbody>{s.rows.slice(0, 60).map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j} className={typeof c === 'number' ? 'num' : ''}>{typeof c === 'number' ? c.toLocaleString() : c}</td>)}</tr>)}</tbody>
+              </table>
+              {s.rows.length > 60 && <p className="muted small pad">Showing 60 of {s.rows.length} rows. The download has all of them.</p>}
+              {!s.rows.length && <p className="muted pad">{s.empty || 'Nothing in this period. Try a wider date range.'}</p>}
+            </div>
+          ))}
         </div>
       </section>
     </div>
