@@ -150,6 +150,18 @@ export function nextNo(db, kind) {
   const n = db.movements.filter((m) => m.kind === kind).length + 1
   return `${KINDS[kind].pre}-${String(n).padStart(4, '0')}`
 }
+/** Physical state of a tool. Tools without a condition yet count as Good. */
+export const TOOL_CONDITIONS = {
+  new: { label: 'New', tone: 'info' },
+  good: { label: 'Good', tone: 'ok' },
+  fair: { label: 'Fair', tone: 'warn' },
+  repair: { label: 'Needs repair', tone: 'bad' },
+  damaged: { label: 'Damaged', tone: 'bad' },
+  lost: { label: 'Lost', tone: 'plain' },
+  scrapped: { label: 'Scrapped', tone: 'plain' },
+}
+export const toolCondition = (m) => m.condition || 'good'
+
 /** Tools currently out at each site = tools sent out minus tools returned. */
 export function toolsAtSites(db) {
   const tools = new Set(db.materials.filter((m) => m.category === 'Tools').map((m) => m.id))
@@ -191,6 +203,11 @@ export function sampleDB() {
   const r = rng(20261118)
   const pick = (a) => a[Math.floor(r() * a.length)]
   const materials = MATERIALS.map(([name, category, unit, opening, min], i) => ({ id: 'm' + (i + 1), name, category, unit, opening, min }))
+  // a few tools with a condition story for the demo
+  const setCond = (name, condition, log) => { const m = materials.find((x) => x.name === name); m.condition = condition; m.conditionLog = log }
+  setCond('Compressor Big', 'repair', [{ at: addDays(TODAY, -6) + 'T09:30:00', from: 'good', to: 'repair', note: 'Returned from Renault Hail, pressure valve leaking', by: 'Manager' }])
+  setCond('Trolley', 'fair', [{ at: addDays(TODAY, -15) + 'T14:10:00', from: 'good', to: 'fair', note: 'One wheel worn', by: 'Manager' }])
+  setCond('Aluminium Ladder', 'new', [])
   const bal = Object.fromEntries(materials.map((m) => [m.id, m.opening]))
   const movements = []
   const counters = { purchase: 0, return: 0, issue: 0 }

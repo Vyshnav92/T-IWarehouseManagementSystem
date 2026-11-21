@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
-import { PackagePlus, PackageMinus, Plus, Search, Boxes, ArrowDownToLine, ArrowUpFromLine, Hammer, FileSpreadsheet, MapPin, Sparkles, Package } from 'lucide-react'
+import { PackagePlus, PackageMinus, Plus, Search, Boxes, ArrowDownToLine, ArrowUpFromLine, Hammer, FileSpreadsheet, MapPin, Sparkles, Package, Pencil } from 'lucide-react'
 import { useApp } from '../store'
-import { KINDS, STOCK_STATUS, fmtDate, fmtNum, toolsAtSites, daysUntil } from '../data'
+import { KINDS, STOCK_STATUS, fmtDate, fmtNum, toolsAtSites, daysUntil, balances, TOOL_CONDITIONS, toolCondition } from '../data'
 import { insights } from '../ai'
 import { PageHeader, Tabs, Btn, Pill, Empty, AiTag, cx } from '../ui'
 
@@ -24,7 +24,7 @@ export default function Warehouse() {
         { id: 'stock', label: 'Stock levels', icon: Boxes, count: low || null, alert: true },
         { id: 'in', label: 'Stock in', icon: ArrowDownToLine, count: ins_.length },
         { id: 'out', label: 'Stock out', icon: ArrowUpFromLine, count: outs.length },
-        { id: 'tools', label: 'Tools at sites', icon: Hammer },
+        { id: 'tools', label: 'Tools', icon: Hammer },
       ]} />
       {tab === 'stock' && <StockLevels ins={ins} />}
       {tab === 'in' && <MovementList list={ins_} kinds={['purchase', 'return']} />}
@@ -125,7 +125,32 @@ function MovementList({ list, kinds }) {
 function Tools() {
   const { db, open } = useApp()
   const sites = toolsAtSites(db)
+  const bal = useMemo(() => balances(db), [db])
+  const tools = db.materials.filter((m) => m.category === 'Tools')
+  const atSites = (id) => sites.reduce((a, s) => a + (s.tools.find((t) => t.id === id)?.q || 0), 0)
   return <>
+    <section className="card flush">
+      <header className="card-h pad"><div><h3>All tools</h3><p className="muted small">Press a condition to change it. Every change is kept in the tool's history.</p></div></header>
+      <div className="tablewrap">
+        <table className="tbl">
+          <thead><tr><th>Tool</th><th className="r">In store</th><th className="r">At sites</th><th>Condition</th></tr></thead>
+          <tbody>
+            {tools.map((m) => {
+              const c = TOOL_CONDITIONS[toolCondition(m)]
+              return (
+                <tr key={m.id}>
+                  <td><button className="linkish" onClick={() => open('material', { id: m.id })}><b>{m.name}</b></button></td>
+                  <td className="r num">{fmtNum(bal[m.id] || 0)} <span className="muted small">{m.unit}</span></td>
+                  <td className="r num">{fmtNum(atSites(m.id))}</td>
+                  <td><button className="condbtn" onClick={() => open('toolCondition', { id: m.id })} title="Change condition"><Pill tone={c.tone} dot>{c.label}</Pill><Pencil size={13} /></button></td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <h3 className="sec-t">Tools out at sites</h3>
     <p className="lead"><Sparkles size={16} /> Worked out automatically: tools sent to a site, minus tools returned. You always know where your scaffolding, ladders and compressors are.</p>
     {sites.length === 0 ? <Empty icon={Hammer} title="No tools out at sites" /> : (
       <div className="sites">

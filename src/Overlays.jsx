@@ -6,7 +6,7 @@ import {
 import { useApp } from './store'
 import {
   KINDS, balances, nextNo, TODAY, fmtDate, fmtNum, fmtSAR, uid, EXPIRY, addMonths, daysUntil, currentValue, maintSpend,
-  CONDITIONS, OWNERSHIP, VEHICLE_DOCS, DRIVER_DOCS, vehicleExpiryKeys, DRIVER_EXPIRY_KEYS, STOCK_STATUS, stockStatus, usageRate,
+  CONDITIONS, OWNERSHIP, VEHICLE_DOCS, DRIVER_DOCS, vehicleExpiryKeys, DRIVER_EXPIRY_KEYS, STOCK_STATUS, stockStatus, usageRate, TOOL_CONDITIONS, toolCondition,
 } from './data'
 import { parseEntry, typicalIssue, simulateReadExpiry, simulateReadBill } from './ai'
 import { Modal, Drawer, Btn, Pill, Field, FileSlot, ExpiryPill, AiTag, Empty, DocViewer, cx, fileUrl } from './ui'
@@ -376,6 +376,43 @@ function RenewModal({ entity, id, expKey, onClose }) {
   )
 }
 
+// ======================= tool condition =======================
+function ToolConditionModal({ id, onClose }) {
+  const { db, update, toast } = useApp()
+  const m = db.materials.find((x) => x.id === id)
+  const [cond, setCond] = useState(() => (m ? toolCondition(m) : 'good'))
+  const [note, setNote] = useState('')
+  if (!m) return null
+  const was = toolCondition(m)
+  const log = [...(m.conditionLog || [])].reverse()
+  const save = () => {
+    if (cond === was && !note.trim()) return onClose()
+    const entry = { at: new Date().toISOString(), from: was, to: cond, note: note.trim(), by: db.settings.managerName || 'Manager' }
+    update((d) => { const x = d.materials.find((y) => y.id === id); x.condition = cond; x.conditionLog = [...(x.conditionLog || []), entry] },
+      `${m.name}: condition ${cond === was ? 'note added' : `changed to ${TOOL_CONDITIONS[cond].label}`}`)
+    toast(cond === was ? 'Note saved' : `${m.name} is now marked ${TOOL_CONDITIONS[cond].label}`); onClose()
+  }
+  return (
+    <Modal title="Tool condition" sub={m.name} icon={Wrench} onClose={onClose} width={600}
+      footer={<><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn icon={CheckCircle2} onClick={save}>Save</Btn></>}>
+      <div className="seg">
+        {Object.entries(TOOL_CONDITIONS).map(([k, c]) => <button key={k} type="button" className={cx('segb', cond === k && 'on', 'tone-' + c.tone)} onClick={() => setCond(k)}>{c.label}</button>)}
+      </div>
+      <Field label="Note (optional)"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Handle cracked, sent for repair" /></Field>
+      <h4 className="sec">History</h4>
+      {log.length === 0 ? <p className="muted small">No changes yet. This tool has been {TOOL_CONDITIONS[was].label} since it was added.</p> : (
+        <ul className="condlog">{log.map((e, i) => (
+          <li key={i}>
+            <div className="row"><span className="muted small num">{new Date(e.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span><span className="grow" /><span className="muted small">{e.by}</span></div>
+            <div className="row"><Pill tone={TOOL_CONDITIONS[e.from].tone}>{TOOL_CONDITIONS[e.from].label}</Pill>→<Pill tone={TOOL_CONDITIONS[e.to].tone}>{TOOL_CONDITIONS[e.to].label}</Pill></div>
+            {e.note && <span>{e.note}</span>}
+          </li>
+        ))}</ul>
+      )}
+    </Modal>
+  )
+}
+
 // ======================= vehicle =======================
 function VehicleDrawer({ id, tab: t0, onClose }) {
   const { db, open, update, toast } = useApp()
@@ -619,6 +656,6 @@ function DriverForm({ id, onClose }) {
 
 const MAP = {
   entry: EntryForm, movement: MovementDrawer, material: MaterialDrawer, materialForm: MaterialForm,
-  vehicle: VehicleDrawer, vehicleForm: VehicleForm, maint: MaintForm, renew: RenewModal, readDoc: ReadDocModal,
+  vehicle: VehicleDrawer, vehicleForm: VehicleForm, maint: MaintForm, renew: RenewModal, readDoc: ReadDocModal, toolCondition: ToolConditionModal,
   driver: DriverDrawer, driverForm: DriverForm, doc: (p) => <DocViewer fileRef={p.fileRef} title={p.title} onClose={p.onClose} />,
 }

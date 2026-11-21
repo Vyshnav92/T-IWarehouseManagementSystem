@@ -605,3 +605,14 @@ input:focus,select:focus{border-color:var(--red);box-shadow:0 0 0 3px rgba(200,1
   .kv{grid-template-columns:minmax(0,1fr)}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* tool condition */
+.card-h.pad{padding:18px 20px 0;margin-bottom:12px}
+.sec-t{font-size:17px;margin:22px 0 10px}
+.condbtn{display:inline-flex;align-items:center;gap:6px;border:0;background:none;padding:2px;border-radius:999px;cursor:pointer;color:var(--muted)}
+.condbtn:hover{color:var(--red)}
+.condbtn:hover .pill{box-shadow:0 0 0 2px var(--line)}
+.condlog{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.condlog li{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font-size:13.5px}
+.condlog .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.segb.on.tone-info{background:var(--infobg);border-color:var(--info);color:var(--info)}.segb.on.tone-plain{background:var(--soft);border-color:var(--muted);color:var(--ink2)}
