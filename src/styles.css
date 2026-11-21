@@ -620,3 +620,11 @@ input:focus,select:focus{border-color:var(--red);box-shadow:0 0 0 3px rgba(200,1
 .condlog li{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font-size:13.5px}
 .condlog .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
 .segb.on.tone-info{background:var(--infobg);border-color:var(--info);color:var(--info)}.segb.on.tone-plain{background:var(--soft);border-color:var(--muted);color:var(--ink2)}
+
+.indem{border-radius:12px;outline:2px dashed transparent;outline-offset:4px;transition:outline-color .15s}
+.indem.drag{outline-color:var(--red);background:rgba(200,16,46,.03)}
+.indem-msg{margin:0 0 10px;padding:10px 12px;border-radius:10px;font-size:13px;background:#fff7e6;color:#8a5a00;border:1px solid #f3dcae}
+.indem-msg.bad{background:#fdecee;color:#9b1c2c;border-color:#f5c2c8}
+.indem-prog{height:4px;border-radius:4px;background:var(--line);overflow:hidden;margin:0 0 10px}
+.indem-prog span{display:block;height:100%;width:40%;background:var(--red);animation:indemprog 1s linear infinite}
+@keyframes indemprog{from{transform:translateX(-100%)}to{transform:translateX(250%)}}

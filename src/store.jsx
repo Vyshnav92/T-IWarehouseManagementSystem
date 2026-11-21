@@ -70,7 +70,7 @@ export function AppProvider({ children }) {
   }, [])
 
   /** Store an uploaded File; returns a small reference kept in the database. */
-  const saveFile = useCallback((file) => new Promise((resolve) => {
+  const saveFile = useCallback((file) => new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => {
       const id = uid('f')
@@ -81,6 +81,7 @@ export function AppProvider({ children }) {
       if (!persisted) toast('File attached. It is large, so it is kept for this session only.', 'warn')
       resolve({ id, name: file.name, type: file.type, size: file.size, at: new Date().toISOString() })
     }
+    reader.onerror = () => reject(reader.error || new Error('Could not read file'))
     reader.readAsDataURL(file)
   }), [toast])
 

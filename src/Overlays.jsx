@@ -456,7 +456,7 @@ function VehicleDrawer({ id, tab: t0, onClose }) {
     <Drawer wide title={v.plate} sub={`${v.brand} ${v.model} · ${v.year} · ${v.type === 'heavy' ? 'Heavy vehicle' : 'Car'}`} badge={<Pill tone={c.tone} dot>{c.label}</Pill>} onClose={onClose}
       actions={<Btn kind="ghost" size="sm" icon={Pencil} onClick={() => open('vehicleForm', { id })}>Edit</Btn>}>
       <div className="dtabs">
-        {[['overview', 'Overview'], ['documents', 'Documents'], ['maintenance', `Maintenance (${v.maintenance.length})`], ['indemnity', `Indemnity (${(v.indemnityDocs || []).length})`]].map(([k, l]) => <button key={k} className={cx('dtab', tab === k && 'on')} onClick={() => setTab(k)}>{l}</button>)}
+        {[['overview', 'Overview'], ['documents', 'Documents'], ['maintenance', `Maintenance (${v.maintenance.length})`], ['indemnity', (v.indemnityDocs || []).length ? `Indemnity (${v.indemnityDocs.length})` : 'Indemnity']].map(([k, l]) => <button key={k} className={cx('dtab', tab === k && 'on')} onClick={() => setTab(k)}>{l}</button>)}
       </div>
       {tab === 'overview' && <>
         <div className="facts">
@@ -523,74 +523,102 @@ function VehicleDrawer({ id, tab: t0, onClose }) {
   )
 }
 
-/** Indemnity papers for one vehicle: PDFs only, at most MAX_INDEMNITY_DOCS. */
+/** Indemnity PDFs for one vehicle: real PDFs only, at most MAX_INDEMNITY_DOCS, each up to MAX_INDEMNITY_MB. */
 const MAX_INDEMNITY_DOCS = 5
-const isPdfFile = (f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name)
+const MAX_INDEMNITY_MB = 10
 const fmtSize = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`)
+/** Checks the file's first bytes ("%PDF-"), so a renamed image or Word file is rejected. */
+const isRealPdf = async (f) => {
+  if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') return false
+  try { return new TextDecoder().decode(await f.slice(0, 5).arrayBuffer()) === '%PDF-' } catch { return false }
+}
+/** Keep letters, digits, spaces and . _ - ( ); anything else becomes "_". */
+const cleanName = (n) => {
+  const s = n.replace(/[^\p{L}\p{N} ._()-]/gu, '_').replace(/\s+/g, ' ').trim()
+  return /\.pdf$/i.test(s) ? s : (s || 'document') + '.pdf'
+}
 
 function IndemnityDocs({ v }) {
   const { open, update, toast, saveFile, dropFile } = useApp()
   const input = useRef(null)
   const [busy, setBusy] = useState(false)
+  const [drag, setDrag] = useState(false)
+  const [msg, setMsg] = useState(null) // { tone, text } shown inside the section
   const [confirmId, setConfirmId] = useState(null)
   const list = v.indemnityDocs || []
   const left = MAX_INDEMNITY_DOCS - list.length
+  const full = left <= 0
 
-  const onPick = async (e) => {
-    const picked = [...e.target.files]; e.target.value = ''
-    if (!picked.length) return
-    const pdfs = picked.filter(isPdfFile)
-    if (pdfs.length < picked.length) toast(`Only PDF files can be added here. ${picked.length - pdfs.length} file${picked.length - pdfs.length > 1 ? 's were' : ' was'} skipped.`, 'warn')
-    if (!pdfs.length) return
-    if (left <= 0) return toast(`You already have ${MAX_INDEMNITY_DOCS} PDFs. Remove one to add another.`, 'warn')
-    const take = pdfs.slice(0, left)
-    if (pdfs.length > left) toast(`Only ${MAX_INDEMNITY_DOCS} PDFs are allowed. Added the first ${left}.`, 'warn')
+  const add = async (files) => {
+    if (!files.length || busy) return
+    setMsg(null)
+    if (full) return setMsg({ tone: 'warn', text: `Maximum of ${MAX_INDEMNITY_DOCS} PDFs reached. Delete one to add another.` })
+    if (files.length > left) return setMsg({ tone: 'warn', text: `You picked ${files.length} files but only ${left} more can be added. Nothing was added.` })
+    const tooBig = files.filter((f) => f.size > MAX_INDEMNITY_MB * 1048576)
+    if (tooBig.length) return setMsg({ tone: 'bad', text: `${tooBig.map((f) => f.name).join(', ')} ${tooBig.length > 1 ? 'are' : 'is'} over ${MAX_INDEMNITY_MB} MB. Each PDF can be at most ${MAX_INDEMNITY_MB} MB. Nothing was added.` })
     setBusy(true)
+    const refs = []
     try {
-      const refs = []
-      for (const f of take) refs.push(await saveFile(f))
+      const checks = await Promise.all(files.map(isRealPdf))
+      const bad = files.filter((_, i) => !checks[i])
+      if (bad.length) return setMsg({ tone: 'bad', text: `${bad.map((f) => f.name).join(', ')} ${bad.length > 1 ? 'are not PDF files' : 'is not a PDF file'}. Only PDFs can be added here. Nothing was added.` })
+      const dupes = files.filter((f) => list.some((r) => r.name === cleanName(f.name)))
+      for (const f of files) refs.push({ ...(await saveFile(f)), name: cleanName(f.name), type: 'application/pdf', by: 'Manager' })
       update((d) => { const x = d.vehicles.find((y) => y.id === v.id); x.indemnityDocs = [...(x.indemnityDocs || []), ...refs] },
-        `Indemnity ${refs.length > 1 ? `${refs.length} PDFs` : 'PDF'} added for ${v.plate}`, 'upload')
+        `Indemnity PDF${refs.length > 1 ? 's' : ''} added for ${v.plate} by Manager: ${refs.map((r) => r.name).join(', ')}`, 'upload')
       toast(refs.length > 1 ? `${refs.length} PDFs added` : 'PDF added')
+      if (dupes.length) setMsg({ tone: 'warn', text: `A file named ${dupes.map((f) => cleanName(f.name)).join(', ')} was already here. Both copies are kept.` })
+    } catch {
+      refs.forEach(dropFile) // nothing half-saved
+      setMsg({ tone: 'bad', text: 'The upload failed and nothing was saved. Check your connection and try again.' })
     } finally { setBusy(false) }
   }
 
   const remove = (ref) => {
     update((d) => { const x = d.vehicles.find((y) => y.id === v.id); x.indemnityDocs = (x.indemnityDocs || []).filter((r) => r.id !== ref.id) },
-      `Indemnity PDF removed from ${v.plate}: ${ref.name}`)
-    dropFile(ref); setConfirmId(null); toast('PDF removed')
+      `Indemnity PDF deleted from ${v.plate} by Manager: ${ref.name}`)
+    dropFile(ref); setConfirmId(null); setMsg(null); toast('PDF deleted')
   }
 
-  return <>
+  const dropProps = {
+    onDragOver: (e) => { e.preventDefault(); if (!busy) setDrag(true) },
+    onDragLeave: () => setDrag(false),
+    onDrop: (e) => { e.preventDefault(); setDrag(false); add([...e.dataTransfer.files]) },
+  }
+
+  return <div className={cx('indem', drag && 'drag')} {...dropProps}>
     <div className="mhead">
-      <p className="muted small grow">Keep insurance or third-party indemnity papers for this vehicle here. PDF only, up to {MAX_INDEMNITY_DOCS} files.</p>
-      <span className="muted small num">{list.length} of {MAX_INDEMNITY_DOCS}</span>
-      <Btn icon={Upload} disabled={busy || left <= 0} title={left <= 0 ? `Limit of ${MAX_INDEMNITY_DOCS} PDFs reached. Remove one to add another.` : undefined} onClick={() => input.current?.click()}>{busy ? 'Adding…' : 'Add PDF'}</Btn>
-      <input ref={input} type="file" accept="application/pdf,.pdf" multiple hidden onChange={onPick} />
+      <p className="muted small grow">Keep the insurer letters, claim forms and other indemnity papers for this vehicle here. PDF only, up to {MAX_INDEMNITY_MB} MB each. You can also drag files onto this area.</p>
+      <span className="muted small num" aria-live="polite">{list.length} of {MAX_INDEMNITY_DOCS} PDFs</span>
+      <Btn icon={Upload} disabled={busy || full} onClick={() => input.current?.click()}>{busy ? 'Uploading…' : 'Add PDF'}</Btn>
+      <input ref={input} type="file" accept="application/pdf,.pdf" multiple hidden onChange={(e) => { const f = [...e.target.files]; e.target.value = ''; add(f) }} />
     </div>
-    {list.length === 0 ? <Empty icon={ShieldCheck} title="No indemnity papers yet" text={`Add the indemnity PDFs for ${v.plate}. You can keep up to ${MAX_INDEMNITY_DOCS}.`} /> : (
+    {busy && <div className="indem-prog" role="progressbar" aria-label="Uploading"><span /></div>}
+    {full && !msg && <p className="indem-msg warn">Maximum of {MAX_INDEMNITY_DOCS} PDFs reached. Delete one to add another.</p>}
+    {msg && <p className={cx('indem-msg', msg.tone)} role="alert">{msg.text}</p>}
+    {list.length === 0 ? <Empty icon={ShieldCheck} title="No indemnity PDFs yet" text={`You can add up to ${MAX_INDEMNITY_DOCS}.`} /> : (
       <div className="slots">{list.map((r) => (
         <div key={r.id} className="slot has">
           <span className="slot-ic"><FileText size={20} /></span>
           <div className="grow slot-t">
             <b className="ellipsis" title={r.name}>{r.name}</b>
-            <span className="muted">{r.size ? fmtSize(r.size) + ' · ' : ''}{r.at ? `Added ${new Date(r.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}` : 'PDF'}</span>
+            <span className="muted">{r.at ? `Added ${new Date(r.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}` : 'Added'}{` by ${r.by || 'Manager'}`}{r.size ? ' · ' + fmtSize(r.size) : ''}</span>
           </div>
           <div className="slot-a">
             {confirmId === r.id ? <>
-              <span className="muted small">Remove?</span>
-              <Btn kind="ghost" size="sm" onClick={() => setConfirmId(null)}>Keep</Btn>
-              <Btn size="sm" icon={Trash2} onClick={() => remove(r)}>Remove</Btn>
+              <span className="muted small">Delete this PDF?</span>
+              <Btn kind="ghost" size="sm" onClick={() => setConfirmId(null)}>Cancel</Btn>
+              <Btn size="sm" icon={Trash2} onClick={() => remove(r)}>Delete</Btn>
             </> : <>
-              <button className="iconbtn sm" title="View" aria-label="View" onClick={() => open('doc', { fileRef: r, title: 'Indemnity' })}><Eye size={17} /></button>
-              <button className="iconbtn sm" title="Download" aria-label="Download" onClick={() => { if (!downloadRef(r)) toast('File not available', 'warn') }}><Download size={17} /></button>
-              <button className="iconbtn sm" title="Remove" aria-label="Remove" onClick={() => setConfirmId(r.id)}><Trash2 size={17} /></button>
+              <button className="iconbtn sm" title="View" aria-label={`View ${r.name}`} onClick={() => open('doc', { fileRef: r, title: r.name })}><Eye size={17} /></button>
+              <button className="iconbtn sm" title="Download" aria-label={`Download ${r.name}`} onClick={() => { if (!downloadRef(r)) toast('This file is no longer available on this device.', 'warn') }}><Download size={17} /></button>
+              <button className="iconbtn sm" title="Delete" aria-label={`Delete ${r.name}`} onClick={() => setConfirmId(r.id)}><Trash2 size={17} /></button>
             </>}
           </div>
         </div>
       ))}</div>
     )}
-  </>
+  </div>
 }
 function VehicleSlot({ v, d }) {
   const onUpload = useDocUpload({ entity: 'vehicle', id: v.id, docKey: d.key, reads: d.reads, label: d.label })
@@ -626,9 +654,9 @@ function MaintForm({ vehicleId, maintId, onClose }) {
   if (!v) return null
   const save = () => {
     if (!f.detail.trim()) return setErr('What work was done?')
-    const { indemnity: _dropped, ...rest } = f // indemnity moved to its own tab as PDFs; drop the old per-record amount
-    const rec = { ...rest, amount: Number(f.amount) || 0 }
-    if (ex) update((d) => { const list = d.vehicles.find((x) => x.id === vehicleId).maintenance; const i = list.findIndex((m) => m.id === maintId); const { indemnity: _old, ...prev } = list[i]; list[i] = { ...prev, ...rec } }, `Maintenance updated for ${v.plate}: ${f.detail}`, 'wrench')
+    // Indemnity is no longer entered here (it is PDFs in its own tab). Any old amount on a record is kept untouched so no data is lost.
+    const rec = { ...f, amount: Number(f.amount) || 0 }
+    if (ex) update((d) => { const list = d.vehicles.find((x) => x.id === vehicleId).maintenance; const i = list.findIndex((m) => m.id === maintId); list[i] = { ...list[i], ...rec } }, `Maintenance updated for ${v.plate}: ${f.detail}`, 'wrench')
     else update((d) => { d.vehicles.find((x) => x.id === vehicleId).maintenance.push({ id: uid('mt'), ...rec }) }, `Maintenance added for ${v.plate}: ${f.detail} (${fmtSAR(rec.amount)})`, 'wrench')
     toast(ex ? 'Maintenance updated' : 'Maintenance saved'); onClose()
   }
