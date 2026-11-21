@@ -13,9 +13,10 @@ import { Modal, Drawer, Btn, Pill, Field, FileSlot, ExpiryPill, AiTag, Empty, Do
 
 export default function Overlays() {
   const { stack, close } = useApp()
-  return stack.map(({ key, type, ...props }) => {
-    const C = MAP[type]
-    return C ? <C key={key} {...props} onClose={close} /> : null
+  return stack.map(({ key, overlay, props }) => {
+    const C = MAP[overlay]
+    if (!C) { console.error(`Unknown overlay "${overlay}"`); return null }
+    return <C key={key} {...props} onClose={close} />
   })
 }
 

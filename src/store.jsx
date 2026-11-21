@@ -95,8 +95,9 @@ export function AppProvider({ children }) {
 
   const value = useMemo(() => ({
     db, update, route, go, toast, toasts, saveFile, resetDemo,
-    stack, open: (type, props = {}) => setStack((s) => [...s, { key: uid('o'), type, ...props }]), close: () => setStack((s) => s.slice(0, -1)), closeAll: () => setStack([]),
-    replace: (type, props = {}) => setStack((s) => [...s.slice(0, -1), { key: uid('o'), type, ...props }]),
+    // Overlay props are kept in their own object so a prop named `type` or `key` can never clash with the overlay name.
+    stack, open: (overlay, props = {}) => setStack((s) => [...s, { key: uid('o'), overlay, props }]), close: () => setStack((s) => s.slice(0, -1)), closeAll: () => setStack([]),
+    replace: (overlay, props = {}) => setStack((s) => [...s.slice(0, -1), { key: uid('o'), overlay, props }]),
     assistant, openAssistant: (seed = null) => setAssistant({ open: true, seed, n: Date.now() }), closeAssistant: () => setAssistant({ open: false, seed: null }),
   }), [db, update, route, go, toast, toasts, saveFile, resetDemo, stack, assistant])
 
