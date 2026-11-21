@@ -86,9 +86,11 @@ function build(id, db, from, to) {
   }
   if (id === 'maintenance') {
     const rows = []
-    db.vehicles.forEach((v) => v.maintenance.filter((m) => inRange(m.date)).forEach((m) => rows.push([m.date, fmtDate(m.date), v.plate, `${v.brand} ${v.model}`, v.user, m.detail, Number(m.amount)])))
+    const ind = (m) => (m.indemnity === undefined || m.indemnity === null || m.indemnity === '' ? '' : Number(m.indemnity)) // blank, not 0, when none recorded
+    db.vehicles.forEach((v) => v.maintenance.filter((m) => inRange(m.date)).forEach((m) => rows.push([m.date, fmtDate(m.date), v.plate, `${v.brand} ${v.model}`, v.user, m.detail, Number(m.amount), ind(m)])))
     rows.sort((a, b) => (a[0] < b[0] ? 1 : -1))
-    return { columns: ['Date', 'Plate', 'Vehicle', 'User', 'Work done', 'Amount (SAR)'], rows: rows.map((r) => r.slice(1)), total: rows.reduce((a, r) => a + r[6], 0) }
+    const indTotal = rows.some((r) => r[7] !== '') ? rows.reduce((a, r) => a + (r[7] === '' ? 0 : r[7]), 0) : ''
+    return { columns: ['Date', 'Plate', 'Vehicle', 'User', 'Work done', 'Amount (SAR)', 'Indemnity (SAR)'], rows: rows.map((r) => r.slice(1)), totalRow: ['', '', '', '', 'Total', rows.reduce((a, r) => a + r[6], 0), indTotal] }
   }
   const ex = allExpiries(db).filter((e) => e.days <= 90)
   return { columns: ['Vehicle / driver', 'Document', 'Expiry date', 'Days left', 'Status'], rows: ex.map((e) => [e.title, EXPIRY[e.key].label, fmtDate(e.date), e.days, e.days < 0 ? 'EXPIRED' : e.days <= s.remindDays ? 'Renew now' : 'Upcoming']) }
@@ -102,7 +104,7 @@ export default function Reports() {
   const [month, setMonth] = useState(prevMonth)
   const R = REPORTS.find((r) => r.id === id)
   const data = useMemo(() => (R.monthly ? buildTools(db, month) : build(id, db, R.dated ? from : null, R.dated ? to : null)), [id, db, from, to, month, R.dated, R.monthly])
-  const sections = data.sections || [{ columns: data.columns, rows: data.rows, total: data.total }]
+  const sections = data.sections || [{ columns: data.columns, rows: data.rows, totalRow: data.totalRow }]
   const rowCount = sections.reduce((a, s) => a + s.rows.length, 0)
   const title = `${R.label} report`
   const generated = new Date().toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -117,7 +119,7 @@ export default function Reports() {
       if (s.title) aoa.push([s.title.toUpperCase()])
       aoa.push(s.columns, ...s.rows)
       if (!s.rows.length && s.empty) aoa.push([s.empty])
-      if (s.total != null) aoa.push([], ['', '', '', '', 'Total', s.total])
+      if (s.totalRow) aoa.push([], s.totalRow)
     })
     const ws = XLSX.utils.aoa_to_sheet(aoa)
     const widest = Math.max(...sections.map((s) => s.columns.length))
@@ -145,7 +147,7 @@ export default function Reports() {
       const body = s.rows.length ? s.rows.map((r) => r.map((c) => (c ?? '') + '')) : [[{ content: s.empty || 'Nothing to show', colSpan: s.columns.length, styles: { textColor: [130, 130, 130] } }]]
       autoTable(doc, {
         startY: y, head: [s.columns], body,
-        foot: s.total != null ? [['', '', '', '', 'Total', 'SAR ' + Math.round(s.total).toLocaleString()]] : undefined,
+        foot: s.totalRow ? [s.totalRow.map((c) => (typeof c === 'number' ? 'SAR ' + Math.round(c).toLocaleString() : c))] : undefined,
         styles: { fontSize: 8.5, cellPadding: 5, lineColor: [230, 231, 234], lineWidth: 0.5 },
         headStyles: { fillColor: [31, 33, 37], textColor: 255, fontStyle: 'bold' }, footStyles: { fillColor: [245, 245, 246], textColor: [29, 31, 35], fontStyle: 'bold' },
         alternateRowStyles: { fillColor: [249, 249, 250] }, margin: { left: 36, right: 36, bottom: 40 },
@@ -184,6 +186,7 @@ export default function Reports() {
               <table className="tbl">
                 <thead><tr>{s.columns.map((c) => <th key={c}>{c}</th>)}</tr></thead>
                 <tbody>{s.rows.slice(0, 60).map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j} className={typeof c === 'number' ? 'num' : ''}>{typeof c === 'number' ? c.toLocaleString() : c}</td>)}</tr>)}</tbody>
+                {s.totalRow && s.rows.length > 0 && <tfoot><tr>{s.totalRow.map((c, j) => <td key={j} className={typeof c === 'number' ? 'num' : ''}><b>{typeof c === 'number' ? c.toLocaleString() : c}</b></td>)}</tr></tfoot>}
               </table>
               {s.rows.length > 60 && <p className="muted small pad">Showing 60 of {s.rows.length} rows. The download has all of them.</p>}
               {!s.rows.length && <p className="muted pad">{s.empty || 'Nothing in this period. Try a wider date range.'}</p>}

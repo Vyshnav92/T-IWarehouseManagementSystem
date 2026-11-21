@@ -502,15 +502,20 @@ function VehicleDrawer({ id, tab: t0, onClose }) {
         </div>
         {v.maintenance.length === 0 ? <Empty icon={Wrench} title="No maintenance yet" text="Each time this vehicle goes to the workshop, add it here with the quotation and the bill." /> : (
           <div className="tablewrap"><table className="tbl">
-            <thead><tr><th>Date</th><th>Work done</th><th>Quotation</th><th>Bill</th><th className="r">Amount</th><th /></tr></thead>
+            <thead><tr><th>Date</th><th>Work done</th><th>Quotation</th><th>Bill</th><th className="r">Amount</th><th className="r">Indemnity</th><th /></tr></thead>
             <tbody>{[...v.maintenance].sort((a, b) => (a.date < b.date ? 1 : -1)).map((m) => (
               <tr key={m.id}>
                 <td className="num nowrap">{fmtDate(m.date)}</td><td>{m.detail}</td>
                 <td><MiniDoc fileRef={m.quotation} title="Quotation" /></td><td><MiniDoc fileRef={m.bill} title="Bill" /></td>
                 <td className="r num"><b>{fmtSAR(m.amount)}</b></td>
-                <td><button className="iconbtn sm" aria-label="Delete" onClick={() => { update((d) => { const x = d.vehicles.find((y) => y.id === id); x.maintenance = x.maintenance.filter((y) => y.id !== m.id) }, `Maintenance removed from ${v.plate}`); toast('Removed') }}><Trash2 size={15} /></button></td>
+                <td className="r num">{hasIndemnity(m) ? fmtSAR(m.indemnity) : ''}</td>
+                <td className="nowrap">
+                  <button className="iconbtn sm" aria-label="Edit" title="Edit" onClick={() => open('maint', { vehicleId: id, maintId: m.id })}><Pencil size={15} /></button>
+                  <button className="iconbtn sm" aria-label="Delete" title="Delete" onClick={() => { update((d) => { const x = d.vehicles.find((y) => y.id === id); x.maintenance = x.maintenance.filter((y) => y.id !== m.id) }, `Maintenance removed from ${v.plate}`); toast('Removed') }}><Trash2 size={15} /></button>
+                </td>
               </tr>
             ))}</tbody>
+            <tfoot><tr><td colSpan={4}><b>Total</b></td><td className="r num"><b>{fmtSAR(total)}</b></td><td className="r num"><b>{v.maintenance.some(hasIndemnity) ? fmtSAR(v.maintenance.reduce((a, m) => a + (hasIndemnity(m) ? Number(m.indemnity) : 0), 0)) : ''}</b></td><td /></tr></tfoot>
           </table></div>
         )}
       </>}
@@ -542,24 +547,34 @@ function DepreciationChart({ v, rate }) {
   )
 }
 
-function MaintForm({ vehicleId, onClose }) {
+/** Indemnity is optional: records without one stay blank (not 0). */
+const hasIndemnity = (m) => m.indemnity !== undefined && m.indemnity !== null && m.indemnity !== ''
+
+function MaintForm({ vehicleId, maintId, onClose }) {
   const { db, update, toast, saveFile } = useApp()
   const v = db.vehicles.find((x) => x.id === vehicleId)
-  const [f, setF] = useState({ date: TODAY, detail: '', amount: '', quotation: null, bill: null })
+  const ex = maintId ? v?.maintenance.find((m) => m.id === maintId) : null
+  const [f, setF] = useState(() => ex ? { ...ex, amount: String(ex.amount ?? ''), indemnity: hasIndemnity(ex) ? String(ex.indemnity) : '' } : { date: TODAY, detail: '', amount: '', indemnity: '', quotation: null, bill: null })
   const [err, setErr] = useState('')
+  if (!v) return null
   const save = () => {
     if (!f.detail.trim()) return setErr('What work was done?')
-    update((d) => { d.vehicles.find((x) => x.id === vehicleId).maintenance.push({ id: uid('mt'), ...f, amount: Number(f.amount) || 0 }) }, `Maintenance added for ${v.plate}: ${f.detail} (${fmtSAR(Number(f.amount) || 0)})`, 'wrench')
-    toast('Maintenance saved'); onClose()
+    const ind = String(f.indemnity).trim()
+    if (ind !== '' && (isNaN(Number(ind)) || Number(ind) < 0)) return setErr('Indemnity must be 0 or more, or left blank.')
+    const rec = { ...f, amount: Number(f.amount) || 0, indemnity: ind === '' ? null : Math.round(Number(ind) * 100) / 100 }
+    if (ex) update((d) => { const list = d.vehicles.find((x) => x.id === vehicleId).maintenance; const i = list.findIndex((m) => m.id === maintId); list[i] = { ...list[i], ...rec } }, `Maintenance updated for ${v.plate}: ${f.detail}`, 'wrench')
+    else update((d) => { d.vehicles.find((x) => x.id === vehicleId).maintenance.push({ id: uid('mt'), ...rec }) }, `Maintenance added for ${v.plate}: ${f.detail} (${fmtSAR(rec.amount)})`, 'wrench')
+    toast(ex ? 'Maintenance updated' : 'Maintenance saved'); onClose()
   }
   const up = (k) => async (e) => { const x = e.target.files[0]; e.target.value = ''; if (x) { const r = await saveFile(x); setF((p) => ({ ...p, [k]: r })) } }
   return (
-    <Modal title="Add maintenance" sub={`${v.plate} · ${v.brand} ${v.model} · used by ${v.user}`} icon={Wrench} onClose={onClose} width={600}
-      footer={<><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}>Save</Btn></>}>
+    <Modal title={ex ? 'Edit maintenance' : 'Add maintenance'} sub={`${v.plate} · ${v.brand} ${v.model} · used by ${v.user}`} icon={Wrench} onClose={onClose} width={600}
+      footer={<><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}>{ex ? 'Save changes' : 'Save'}</Btn></>}>
       <div className="fgrid">
         <Field label="Date"><input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} /></Field>
         <Field label="Amount (SAR)"><input type="number" min="0" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} placeholder="0" /></Field>
-        <Field label="Work done" span={2}><input value={f.detail} onChange={(e) => setF({ ...f, detail: e.target.value })} placeholder="e.g. Oil change and brake pads" autoFocus /></Field>
+        <Field label="Work done"><input value={f.detail} onChange={(e) => setF({ ...f, detail: e.target.value })} placeholder="e.g. Oil change and brake pads" autoFocus /></Field>
+        <Field label="Indemnity (SAR)" hint="Paid by insurance or a third party. Leave blank if none."><input type="number" min="0" step="0.01" value={f.indemnity} onChange={(e) => setF({ ...f, indemnity: e.target.value })} placeholder="Optional" /></Field>
       </div>
       <div className="two">
         {[['quotation', 'Quotation'], ['bill', 'Bill']].map(([k, l]) => (
