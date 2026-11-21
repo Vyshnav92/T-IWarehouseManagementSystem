@@ -86,11 +86,9 @@ function build(id, db, from, to) {
   }
   if (id === 'maintenance') {
     const rows = []
-    const ind = (m) => (m.indemnity === undefined || m.indemnity === null || m.indemnity === '' ? '' : Number(m.indemnity)) // blank, not 0, when none recorded
-    db.vehicles.forEach((v) => v.maintenance.filter((m) => inRange(m.date)).forEach((m) => rows.push([m.date, fmtDate(m.date), v.plate, `${v.brand} ${v.model}`, v.user, m.detail, Number(m.amount), ind(m)])))
+    db.vehicles.forEach((v) => v.maintenance.filter((m) => inRange(m.date)).forEach((m) => rows.push([m.date, fmtDate(m.date), v.plate, `${v.brand} ${v.model}`, v.user, m.detail, Number(m.amount)])))
     rows.sort((a, b) => (a[0] < b[0] ? 1 : -1))
-    const indTotal = rows.some((r) => r[7] !== '') ? rows.reduce((a, r) => a + (r[7] === '' ? 0 : r[7]), 0) : ''
-    return { columns: ['Date', 'Plate', 'Vehicle', 'User', 'Work done', 'Amount (SAR)', 'Indemnity (SAR)'], rows: rows.map((r) => r.slice(1)), totalRow: ['', '', '', '', 'Total', rows.reduce((a, r) => a + r[6], 0), indTotal] }
+    return { columns: ['Date', 'Plate', 'Vehicle', 'User', 'Work done', 'Amount (SAR)'], rows: rows.map((r) => r.slice(1)), totalRow: ['', '', '', '', 'Total', rows.reduce((a, r) => a + r[6], 0)] }
   }
   const ex = allExpiries(db).filter((e) => e.days <= 90)
   return { columns: ['Vehicle / driver', 'Document', 'Expiry date', 'Days left', 'Status'], rows: ex.map((e) => [e.title, EXPIRY[e.key].label, fmtDate(e.date), e.days, e.days < 0 ? 'EXPIRED' : e.days <= s.remindDays ? 'Renew now' : 'Upcoming']) }
