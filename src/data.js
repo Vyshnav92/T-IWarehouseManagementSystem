@@ -251,7 +251,7 @@ export function sampleDB() {
 
   const sample = (title, rows) => ({ sample: true, name: title.replace(/\s+/g, '_') + '.pdf', title, rows })
   const V = (o) => {
-    const v = { id: uid('v'), maintenance: [], docs: {}, ...o }
+    const v = { id: uid('v'), maintenance: [], docs: {}, indemnityDocs: [], ...o }
     v.docs.insurance = sample('Insurance Policy', [['Plate', v.plate], ['Insurer', 'Tawuniya'], ['Policy no.', 'TW-' + Math.floor(100000 + r() * 899999)], ['Valid until', fmtDate(addMonths(TODAY, 5))]])
     v.docs.istimara = sample('Istimara – Vehicle Registration', [['Plate', v.plate], ['Make', `${v.brand} ${v.model}`], ['Year', String(v.year)], ['Owner', 'T&I Construction'], ['Expiry', fmtDate(v.registration)]])
     if (v.type === 'heavy') v.docs.opCardDoc = sample('Operation Card', [['Plate', v.plate], ['Activity', 'Goods transport'], ['Expiry', fmtDate(v.opCard)]])

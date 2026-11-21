@@ -84,6 +84,13 @@ export function AppProvider({ children }) {
     reader.readAsDataURL(file)
   }), [toast])
 
+  /** Free the stored bytes of a file that is no longer referenced anywhere. */
+  const dropFile = useCallback((ref) => {
+    if (!ref || ref.sample) return
+    fileCache.delete(ref.id)
+    try { localStorage.removeItem(FILE_KEY + ref.id) } catch { /* ignore */ }
+  }, [])
+
   const resetDemo = useCallback(() => {
     try { Object.keys(localStorage).filter((k) => k.startsWith(FILE_KEY)).forEach((k) => localStorage.removeItem(k)) } catch { /* ignore */ }
     fileCache.clear()
@@ -94,12 +101,12 @@ export function AppProvider({ children }) {
   }, [toast])
 
   const value = useMemo(() => ({
-    db, update, route, go, toast, toasts, saveFile, resetDemo,
+    db, update, route, go, toast, toasts, saveFile, dropFile, resetDemo,
     // Overlay props are kept in their own object so a prop named `type` or `key` can never clash with the overlay name.
     stack, open: (overlay, props = {}) => setStack((s) => [...s, { key: uid('o'), overlay, props }]), close: () => setStack((s) => s.slice(0, -1)), closeAll: () => setStack([]),
     replace: (overlay, props = {}) => setStack((s) => [...s.slice(0, -1), { key: uid('o'), overlay, props }]),
     assistant, openAssistant: (seed = null) => setAssistant({ open: true, seed, n: Date.now() }), closeAssistant: () => setAssistant({ open: false, seed: null }),
-  }), [db, update, route, go, toast, toasts, saveFile, resetDemo, stack, assistant])
+  }), [db, update, route, go, toast, toasts, saveFile, dropFile, resetDemo, stack, assistant])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

@@ -1,7 +1,7 @@
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import {
   PackagePlus, PackageMinus, Undo2, Plus, Trash2, Sparkles, AlertTriangle, ScanLine, CheckCircle2, Wand2, CalendarCheck, Wrench,
-  Truck, Users, Pencil, MapPin, User, Gauge, Phone, Ban, Package, FileText, Lightbulb,
+  Truck, Users, Pencil, MapPin, User, Gauge, Phone, Ban, Package, FileText, Lightbulb, ShieldCheck, Eye, Download, Upload,
 } from 'lucide-react'
 import { useApp } from './store'
 import {
@@ -9,7 +9,7 @@ import {
   CONDITIONS, OWNERSHIP, VEHICLE_DOCS, DRIVER_DOCS, vehicleExpiryKeys, DRIVER_EXPIRY_KEYS, STOCK_STATUS, stockStatus, usageRate, TOOL_CONDITIONS, toolCondition,
 } from './data'
 import { parseEntry, typicalIssue, simulateReadExpiry, simulateReadBill } from './ai'
-import { Modal, Drawer, Btn, Pill, Field, FileSlot, ExpiryPill, AiTag, Empty, DocViewer, cx, fileUrl } from './ui'
+import { Modal, Drawer, Btn, Pill, Field, FileSlot, ExpiryPill, AiTag, Empty, DocViewer, cx, fileUrl, downloadRef } from './ui'
 
 export default function Overlays() {
   const { stack, close } = useApp()
@@ -456,7 +456,7 @@ function VehicleDrawer({ id, tab: t0, onClose }) {
     <Drawer wide title={v.plate} sub={`${v.brand} ${v.model} · ${v.year} · ${v.type === 'heavy' ? 'Heavy vehicle' : 'Car'}`} badge={<Pill tone={c.tone} dot>{c.label}</Pill>} onClose={onClose}
       actions={<Btn kind="ghost" size="sm" icon={Pencil} onClick={() => open('vehicleForm', { id })}>Edit</Btn>}>
       <div className="dtabs">
-        {[['overview', 'Overview'], ['documents', 'Documents'], ['maintenance', `Maintenance (${v.maintenance.length})`]].map(([k, l]) => <button key={k} className={cx('dtab', tab === k && 'on')} onClick={() => setTab(k)}>{l}</button>)}
+        {[['overview', 'Overview'], ['documents', 'Documents'], ['maintenance', `Maintenance (${v.maintenance.length})`], ['indemnity', `Indemnity (${(v.indemnityDocs || []).length})`]].map(([k, l]) => <button key={k} className={cx('dtab', tab === k && 'on')} onClick={() => setTab(k)}>{l}</button>)}
       </div>
       {tab === 'overview' && <>
         <div className="facts">
@@ -502,25 +502,95 @@ function VehicleDrawer({ id, tab: t0, onClose }) {
         </div>
         {v.maintenance.length === 0 ? <Empty icon={Wrench} title="No maintenance yet" text="Each time this vehicle goes to the workshop, add it here with the quotation and the bill." /> : (
           <div className="tablewrap"><table className="tbl">
-            <thead><tr><th>Date</th><th>Work done</th><th>Quotation</th><th>Bill</th><th className="r">Amount</th><th className="r">Indemnity</th><th /></tr></thead>
+            <thead><tr><th>Date</th><th>Work done</th><th>Quotation</th><th>Bill</th><th className="r">Amount</th><th /></tr></thead>
             <tbody>{[...v.maintenance].sort((a, b) => (a.date < b.date ? 1 : -1)).map((m) => (
               <tr key={m.id}>
                 <td className="num nowrap">{fmtDate(m.date)}</td><td>{m.detail}</td>
                 <td><MiniDoc fileRef={m.quotation} title="Quotation" /></td><td><MiniDoc fileRef={m.bill} title="Bill" /></td>
                 <td className="r num"><b>{fmtSAR(m.amount)}</b></td>
-                <td className="r num">{hasIndemnity(m) ? fmtSAR(m.indemnity) : ''}</td>
                 <td className="nowrap">
                   <button className="iconbtn sm" aria-label="Edit" title="Edit" onClick={() => open('maint', { vehicleId: id, maintId: m.id })}><Pencil size={15} /></button>
                   <button className="iconbtn sm" aria-label="Delete" title="Delete" onClick={() => { update((d) => { const x = d.vehicles.find((y) => y.id === id); x.maintenance = x.maintenance.filter((y) => y.id !== m.id) }, `Maintenance removed from ${v.plate}`); toast('Removed') }}><Trash2 size={15} /></button>
                 </td>
               </tr>
             ))}</tbody>
-            <tfoot><tr><td colSpan={4}><b>Total</b></td><td className="r num"><b>{fmtSAR(total)}</b></td><td className="r num"><b>{v.maintenance.some(hasIndemnity) ? fmtSAR(v.maintenance.reduce((a, m) => a + (hasIndemnity(m) ? Number(m.indemnity) : 0), 0)) : ''}</b></td><td /></tr></tfoot>
+            <tfoot><tr><td colSpan={4}><b>Total</b></td><td className="r num"><b>{fmtSAR(total)}</b></td><td /></tr></tfoot>
           </table></div>
         )}
       </>}
+      {tab === 'indemnity' && <IndemnityDocs v={v} />}
     </Drawer>
   )
+}
+
+/** Indemnity papers for one vehicle: PDFs only, at most MAX_INDEMNITY_DOCS. */
+const MAX_INDEMNITY_DOCS = 5
+const isPdfFile = (f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name)
+const fmtSize = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`)
+
+function IndemnityDocs({ v }) {
+  const { open, update, toast, saveFile, dropFile } = useApp()
+  const input = useRef(null)
+  const [busy, setBusy] = useState(false)
+  const [confirmId, setConfirmId] = useState(null)
+  const list = v.indemnityDocs || []
+  const left = MAX_INDEMNITY_DOCS - list.length
+
+  const onPick = async (e) => {
+    const picked = [...e.target.files]; e.target.value = ''
+    if (!picked.length) return
+    const pdfs = picked.filter(isPdfFile)
+    if (pdfs.length < picked.length) toast(`Only PDF files can be added here. ${picked.length - pdfs.length} file${picked.length - pdfs.length > 1 ? 's were' : ' was'} skipped.`, 'warn')
+    if (!pdfs.length) return
+    if (left <= 0) return toast(`You already have ${MAX_INDEMNITY_DOCS} PDFs. Remove one to add another.`, 'warn')
+    const take = pdfs.slice(0, left)
+    if (pdfs.length > left) toast(`Only ${MAX_INDEMNITY_DOCS} PDFs are allowed. Added the first ${left}.`, 'warn')
+    setBusy(true)
+    try {
+      const refs = []
+      for (const f of take) refs.push(await saveFile(f))
+      update((d) => { const x = d.vehicles.find((y) => y.id === v.id); x.indemnityDocs = [...(x.indemnityDocs || []), ...refs] },
+        `Indemnity ${refs.length > 1 ? `${refs.length} PDFs` : 'PDF'} added for ${v.plate}`, 'upload')
+      toast(refs.length > 1 ? `${refs.length} PDFs added` : 'PDF added')
+    } finally { setBusy(false) }
+  }
+
+  const remove = (ref) => {
+    update((d) => { const x = d.vehicles.find((y) => y.id === v.id); x.indemnityDocs = (x.indemnityDocs || []).filter((r) => r.id !== ref.id) },
+      `Indemnity PDF removed from ${v.plate}: ${ref.name}`)
+    dropFile(ref); setConfirmId(null); toast('PDF removed')
+  }
+
+  return <>
+    <div className="mhead">
+      <p className="muted small grow">Keep insurance or third-party indemnity papers for this vehicle here. PDF only, up to {MAX_INDEMNITY_DOCS} files.</p>
+      <span className="muted small num">{list.length} of {MAX_INDEMNITY_DOCS}</span>
+      <Btn icon={Upload} disabled={busy || left <= 0} title={left <= 0 ? `Limit of ${MAX_INDEMNITY_DOCS} PDFs reached. Remove one to add another.` : undefined} onClick={() => input.current?.click()}>{busy ? 'Adding…' : 'Add PDF'}</Btn>
+      <input ref={input} type="file" accept="application/pdf,.pdf" multiple hidden onChange={onPick} />
+    </div>
+    {list.length === 0 ? <Empty icon={ShieldCheck} title="No indemnity papers yet" text={`Add the indemnity PDFs for ${v.plate}. You can keep up to ${MAX_INDEMNITY_DOCS}.`} /> : (
+      <div className="slots">{list.map((r) => (
+        <div key={r.id} className="slot has">
+          <span className="slot-ic"><FileText size={20} /></span>
+          <div className="grow slot-t">
+            <b className="ellipsis" title={r.name}>{r.name}</b>
+            <span className="muted">{r.size ? fmtSize(r.size) + ' · ' : ''}{r.at ? `Added ${new Date(r.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}` : 'PDF'}</span>
+          </div>
+          <div className="slot-a">
+            {confirmId === r.id ? <>
+              <span className="muted small">Remove?</span>
+              <Btn kind="ghost" size="sm" onClick={() => setConfirmId(null)}>Keep</Btn>
+              <Btn size="sm" icon={Trash2} onClick={() => remove(r)}>Remove</Btn>
+            </> : <>
+              <button className="iconbtn sm" title="View" aria-label="View" onClick={() => open('doc', { fileRef: r, title: 'Indemnity' })}><Eye size={17} /></button>
+              <button className="iconbtn sm" title="Download" aria-label="Download" onClick={() => { if (!downloadRef(r)) toast('File not available', 'warn') }}><Download size={17} /></button>
+              <button className="iconbtn sm" title="Remove" aria-label="Remove" onClick={() => setConfirmId(r.id)}><Trash2 size={17} /></button>
+            </>}
+          </div>
+        </div>
+      ))}</div>
+    )}
+  </>
 }
 function VehicleSlot({ v, d }) {
   const onUpload = useDocUpload({ entity: 'vehicle', id: v.id, docKey: d.key, reads: d.reads, label: d.label })
@@ -547,22 +617,18 @@ function DepreciationChart({ v, rate }) {
   )
 }
 
-/** Indemnity is optional: records without one stay blank (not 0). */
-const hasIndemnity = (m) => m.indemnity !== undefined && m.indemnity !== null && m.indemnity !== ''
-
 function MaintForm({ vehicleId, maintId, onClose }) {
   const { db, update, toast, saveFile } = useApp()
   const v = db.vehicles.find((x) => x.id === vehicleId)
   const ex = maintId ? v?.maintenance.find((m) => m.id === maintId) : null
-  const [f, setF] = useState(() => ex ? { ...ex, amount: String(ex.amount ?? ''), indemnity: hasIndemnity(ex) ? String(ex.indemnity) : '' } : { date: TODAY, detail: '', amount: '', indemnity: '', quotation: null, bill: null })
+  const [f, setF] = useState(() => ex ? { ...ex, amount: String(ex.amount ?? '') } : { date: TODAY, detail: '', amount: '', quotation: null, bill: null })
   const [err, setErr] = useState('')
   if (!v) return null
   const save = () => {
     if (!f.detail.trim()) return setErr('What work was done?')
-    const ind = String(f.indemnity).trim()
-    if (ind !== '' && (isNaN(Number(ind)) || Number(ind) < 0)) return setErr('Indemnity must be 0 or more, or left blank.')
-    const rec = { ...f, amount: Number(f.amount) || 0, indemnity: ind === '' ? null : Math.round(Number(ind) * 100) / 100 }
-    if (ex) update((d) => { const list = d.vehicles.find((x) => x.id === vehicleId).maintenance; const i = list.findIndex((m) => m.id === maintId); list[i] = { ...list[i], ...rec } }, `Maintenance updated for ${v.plate}: ${f.detail}`, 'wrench')
+    const { indemnity: _dropped, ...rest } = f // indemnity moved to its own tab as PDFs; drop the old per-record amount
+    const rec = { ...rest, amount: Number(f.amount) || 0 }
+    if (ex) update((d) => { const list = d.vehicles.find((x) => x.id === vehicleId).maintenance; const i = list.findIndex((m) => m.id === maintId); const { indemnity: _old, ...prev } = list[i]; list[i] = { ...prev, ...rec } }, `Maintenance updated for ${v.plate}: ${f.detail}`, 'wrench')
     else update((d) => { d.vehicles.find((x) => x.id === vehicleId).maintenance.push({ id: uid('mt'), ...rec }) }, `Maintenance added for ${v.plate}: ${f.detail} (${fmtSAR(rec.amount)})`, 'wrench')
     toast(ex ? 'Maintenance updated' : 'Maintenance saved'); onClose()
   }
@@ -573,8 +639,7 @@ function MaintForm({ vehicleId, maintId, onClose }) {
       <div className="fgrid">
         <Field label="Date"><input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} /></Field>
         <Field label="Amount (SAR)"><input type="number" min="0" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} placeholder="0" /></Field>
-        <Field label="Work done"><input value={f.detail} onChange={(e) => setF({ ...f, detail: e.target.value })} placeholder="e.g. Oil change and brake pads" autoFocus /></Field>
-        <Field label="Indemnity (SAR)" hint="Paid by insurance or a third party. Leave blank if none."><input type="number" min="0" step="0.01" value={f.indemnity} onChange={(e) => setF({ ...f, indemnity: e.target.value })} placeholder="Optional" /></Field>
+        <Field label="Work done" span={2}><input value={f.detail} onChange={(e) => setF({ ...f, detail: e.target.value })} placeholder="e.g. Oil change and brake pads" autoFocus /></Field>
       </div>
       <div className="two">
         {[['quotation', 'Quotation'], ['bill', 'Bill']].map(([k, l]) => (
@@ -603,7 +668,7 @@ function VehicleForm({ id, type = 'car', onClose }) {
     if (!f.brand.trim()) return setErr('Enter the brand, e.g. Toyota.')
     const clean = { ...f, plate: f.plate.trim().toUpperCase(), year: Number(f.year) || '', purchaseValue: Number(f.purchaseValue) || 0 }
     if (ex) update((d) => { const i = d.vehicles.findIndex((x) => x.id === id); d.vehicles[i] = { ...d.vehicles[i], ...clean } }, `Vehicle ${clean.plate} updated`)
-    else update((d) => { d.vehicles.push({ ...clean, id: uid('v'), docs: {}, maintenance: [] }) }, `New vehicle added: ${clean.plate}`, 'add')
+    else update((d) => { d.vehicles.push({ ...clean, id: uid('v'), docs: {}, maintenance: [], indemnityDocs: [] }) }, `New vehicle added: ${clean.plate}`, 'add')
     toast(ex ? 'Vehicle updated' : 'Vehicle added. Upload its documents next.'); onClose()
   }
   const users = [...db.drivers.map((d) => d.name), ...db.engineers.map((e) => e + ' (Site Eng.)')]
