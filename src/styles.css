@@ -313,7 +313,7 @@ input:focus,select:focus{border-color:var(--red);box-shadow:0 0 0 3px rgba(200,1
 .stats3.compact b{font-size:18px}
 .minrow{display:flex;gap:10px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
 .minrow b{display:block;font-size:14px}.minrow input{width:90px;text-align:right}
-.dtabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:-6px 0 4px;overflow-x:auto;scrollbar-width:none}
+.dtabs{display:flex;flex-shrink:0;gap:4px;border-bottom:1px solid var(--line);margin:-6px 0 4px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
 .dtabs::-webkit-scrollbar{display:none}
 .dtab{white-space:nowrap;flex:none}
 .ellipsis{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
