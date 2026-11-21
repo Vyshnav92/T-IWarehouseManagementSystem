@@ -1,0 +1,19 @@
+# Dependencies (recreated by npm install)
+node_modules/
+
+# Build output (recreated by npm run build)
+dist/
+deploy/
+T&I-Control-Room-Demo.html
+
+# Logs and editor/OS clutter
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/
+
+# Local secrets
+.env
+.env.*
