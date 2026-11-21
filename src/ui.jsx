@@ -114,8 +114,8 @@ export function Empty({ icon: I = Info, title, text, action }) {
   return <div className="empty">{I && <span className="empty-ic"><I size={26} /></span>}<b>{title}</b>{text && <p>{text}</p>}{action}</div>
 }
 
-export function Field({ label, hint, children, span }) {
-  return <label className={cx('field', span && 'span-' + span)}><span className="field-l">{label}</span>{children}{hint && <span className="field-h">{hint}</span>}</label>
+export function Field({ label, hint, children, span, error }) {
+  return <label className={cx('field', span && 'span-' + span, error && 'field-bad')}><span className="field-l">{label}</span>{children}{error ? <span className="field-e" role="alert">{error}</span> : hint && <span className="field-h">{hint}</span>}</label>
 }
 
 export const AiTag = ({ children = 'AI' }) => <span className="aitag"><Sparkles size={12} />{children}</span>

@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react'
-import { Boxes, ArrowDownToLine, ArrowUpFromLine, Truck, Users, Wrench, BellRing, FileSpreadsheet, FileDown, CalendarRange, Hammer } from 'lucide-react'
+import { Boxes, ArrowDownToLine, ArrowUpFromLine, Truck, Users, Wrench, BellRing, FileSpreadsheet, FileDown, CalendarRange, Hammer, Landmark } from 'lucide-react'
 import { useApp } from '../store'
 import { balances, stockStatus, STOCK_STATUS, KINDS, fmtDate, daysUntil, CONDITIONS, currentValue, allExpiries, EXPIRY, addDays, TODAY } from '../data'
 import { PageHeader, Btn, cx } from '../ui'
-import logoLight from '../logo_L.png'
+import { exportExcel, exportPdf } from '../exporter'
+import { assetReportData } from '../AssetOverlays'
 
 const REPORTS = [
   { id: 'stock', label: 'Current stock', icon: Boxes, desc: 'Every material with what you have now', dated: false },
@@ -14,6 +15,7 @@ const REPORTS = [
   { id: 'maintenance', label: 'Maintenance', icon: Wrench, desc: 'Workshop costs per vehicle', dated: true },
   { id: 'reminders', label: 'Expiry list', icon: BellRing, desc: 'Everything that expires in the next 90 days', dated: false },
   { id: 'tools', label: 'Monthly tools', icon: Hammer, desc: 'Tools in and out for one month', monthly: true },
+  { id: 'assets', label: 'Total assets value', icon: Landmark, desc: 'Current value by asset type, with a grand total', dated: false },
 ]
 
 const monthRange = (ym) => { const [y, m] = ym.split('-').map(Number); return { from: `${ym}-01`, to: `${ym}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}` } }
@@ -84,6 +86,7 @@ function build(id, db, from, to) {
   if (id === 'drivers') {
     return { columns: ['#', 'Name', 'License no.', 'License expiry', 'Driver card expiry', 'Days left (card)', 'Profession', 'Phone'], rows: db.drivers.map((d, i) => [i + 1, d.name, d.licenseNo, fmtDate(d.license), fmtDate(d.driverCard), daysUntil(d.driverCard), d.profession, d.phone]) }
   }
+  if (id === 'assets') return { sections: [assetReportData(db).section] }
   if (id === 'maintenance') {
     const rows = []
     db.vehicles.forEach((v) => v.maintenance.filter((m) => inRange(m.date)).forEach((m) => rows.push([m.date, fmtDate(m.date), v.plate, `${v.brand} ${v.model}`, v.user, m.detail, Number(m.amount)])))
@@ -110,50 +113,12 @@ export default function Reports() {
   const fname = `TI_${R.label.replace(/\s+/g, '_')}_${R.monthly ? month : TODAY}`
 
   const excel = async () => {
-    const XLSX = await import('xlsx')
-    const aoa = [[`T&I Construction · ${title}`], [sub + (R.monthly ? ` · Generated ${generated}` : '')]]
-    sections.forEach((s) => {
-      aoa.push([])
-      if (s.title) aoa.push([s.title.toUpperCase()])
-      aoa.push(s.columns, ...s.rows)
-      if (!s.rows.length && s.empty) aoa.push([s.empty])
-      if (s.totalRow) aoa.push([], s.totalRow)
-    })
-    const ws = XLSX.utils.aoa_to_sheet(aoa)
-    const widest = Math.max(...sections.map((s) => s.columns.length))
-    ws['!cols'] = Array.from({ length: widest }, (_, i) => ({ wch: Math.min(40, Math.max(10, ...sections.flatMap((s) => [s.columns[i] || '', ...s.rows.map((r) => r[i] ?? '')]).map((c) => String(c).length)) + 2) }))
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, R.label.slice(0, 30))
-    XLSX.writeFile(wb, fname + '.xlsx')
+    await exportExcel({ title, sub: sub + (R.monthly || id === 'assets' ? ` · Generated ${generated}` : ''), sections, fname, sheet: R.label })
     update(() => {}, `${title} downloaded as Excel`, 'add')
     toast('Excel file downloaded')
   }
   const pdf = async () => {
-    const [{ jsPDF }, { default: autoTable }] = await Promise.all([import('jspdf'), import('jspdf-autotable')])
-    const doc = new jsPDF({ orientation: Math.max(...sections.map((s) => s.columns.length)) > 7 ? 'landscape' : 'portrait', unit: 'pt', format: 'a4' })
-    const W = doc.internal.pageSize.getWidth()
-    try { const img = await toDataUrl(logoLight); doc.addImage(img, 'PNG', 36, 26, 110, 49) } catch { /* logo optional */ }
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(29, 31, 35); doc.text(title, W - 36, 46, { align: 'right' })
-    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(110, 115, 122); doc.text(sub, W - 36, 62, { align: 'right' })
-    doc.setDrawColor(200, 16, 46); doc.setLineWidth(2); doc.line(36, 86, W - 36, 86)
-    let y = 98
-    sections.forEach((s) => {
-      if (s.title) {
-        if (y > doc.internal.pageSize.getHeight() - 90) { doc.addPage(); y = 50 }
-        doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.setTextColor(29, 31, 35); doc.text(s.title, 36, y + 8); y += 18
-      }
-      const body = s.rows.length ? s.rows.map((r) => r.map((c) => (c ?? '') + '')) : [[{ content: s.empty || 'Nothing to show', colSpan: s.columns.length, styles: { textColor: [130, 130, 130] } }]]
-      autoTable(doc, {
-        startY: y, head: [s.columns], body,
-        foot: s.totalRow ? [s.totalRow.map((c) => (typeof c === 'number' ? 'SAR ' + Math.round(c).toLocaleString() : c))] : undefined,
-        styles: { fontSize: 8.5, cellPadding: 5, lineColor: [230, 231, 234], lineWidth: 0.5 },
-        headStyles: { fillColor: [31, 33, 37], textColor: 255, fontStyle: 'bold' }, footStyles: { fillColor: [245, 245, 246], textColor: [29, 31, 35], fontStyle: 'bold' },
-        alternateRowStyles: { fillColor: [249, 249, 250] }, margin: { left: 36, right: 36, bottom: 40 },
-        didDrawPage: () => { doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(150); doc.text(`T&I Construction · Generated ${generated} · Page ${doc.getNumberOfPages()}`, 36, doc.internal.pageSize.getHeight() - 20) },
-      })
-      y = doc.lastAutoTable.finalY + 26
-    })
-    doc.save(fname + '.pdf')
+    await exportPdf({ title, sub, sections, fname })
     update(() => {}, `${title} downloaded as PDF`, 'add')
     toast('PDF downloaded')
   }
@@ -188,20 +153,11 @@ export default function Reports() {
               </table>
               {s.rows.length > 60 && <p className="muted small pad">Showing 60 of {s.rows.length} rows. The download has all of them.</p>}
               {!s.rows.length && <p className="muted pad">{s.empty || 'Nothing in this period. Try a wider date range.'}</p>}
+              {s.note && <p className="muted small pad">{s.note}</p>}
             </div>
           ))}
         </div>
       </section>
     </div>
   )
-}
-
-function toDataUrl(src) {
-  return new Promise((res, rej) => {
-    if (src.startsWith('data:')) return res(src)
-    const img = new Image()
-    img.onload = () => { const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight; c.getContext('2d').drawImage(img, 0, 0); res(c.toDataURL('image/png')) }
-    img.onerror = rej
-    img.src = src
-  })
 }

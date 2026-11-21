@@ -14,7 +14,7 @@ function load() {
     const raw = localStorage.getItem(KEY)
     if (raw) {
       const db = JSON.parse(raw)
-      if (db && db.version === 1) { db.settings = { ...DEFAULT_SETTINGS, ...db.settings, periods: { ...DEFAULT_SETTINGS.periods, ...(db.settings?.periods || {}) } }; return db }
+      if (db && db.version === 1) { db.settings = { ...DEFAULT_SETTINGS, ...db.settings, periods: { ...DEFAULT_SETTINGS.periods, ...(db.settings?.periods || {}) }, depRates: { ...DEFAULT_SETTINGS.depRates, ...(db.settings?.depRates || {}) } }; db.handTools ||= []; db.allocations ||= []; db.officeAssets ||= []; return db }
     }
   } catch { /* storage unavailable — fall back to sample data */ }
   return sampleDB()

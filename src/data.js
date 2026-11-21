@@ -53,6 +53,7 @@ export const DEFAULT_SETTINGS = {
   managerName: 'Manager',
   remindDays: 10,
   depreciation: 15,
+  depRates: { handTools: 20, warehouseTools: 20, officeAssets: 20 },
   periods: { fahas: 12, registration: 36, opCard: 24, driverCard: 12, license: 60 },
   smartChecks: true,
   showHowTo: true,
@@ -177,6 +178,106 @@ export function toolsAtSites(db) {
   return Object.entries(map).map(([project, t]) => ({ project, tools: Object.entries(t).filter(([, q]) => q > 0).map(([id, q]) => ({ id, q })) })).filter((r) => r.tools.length)
 }
 
+// ---------- depreciation (all asset types) ----------
+/** Asset types that have a depreciation rate in Settings. Vehicles keep their original setting (settings.depreciation). */
+export const DEP_TYPES = {
+  vehicles: { label: 'Vehicles', sub: 'Cars and heavy vehicles' },
+  handTools: { label: 'Hand tools', sub: 'Tools held by staff' },
+  warehouseTools: { label: 'Warehouse tools', sub: 'Tools on the Warehouse Tools page' },
+  officeAssets: { label: 'Office assets', sub: 'Furniture, computers, equipment' },
+}
+export const DEFAULT_DEP_RATES = { handTools: 20, warehouseTools: 20, officeAssets: 20 }
+export const rateOf = (s, type) => (type === 'vehicles' ? s.depreciation : (s.depRates?.[type] ?? DEFAULT_DEP_RATES[type]))
+const blank = (x) => x === undefined || x === null || x === ''
+/**
+ * Same method as vehicles (currentValue): the value drops by a yearly percentage, counted from the date of purchase.
+ * It never goes below zero. Returns null when the purchase value or date is missing ("Value missing").
+ */
+export function depreciate(cost, purchaseDate, ratePct, asOf = TODAY) {
+  if (blank(cost) || !purchaseDate || isNaN(Number(cost))) return null
+  const c = Number(cost)
+  const years = Math.max(0, daysUntil(asOf, purchaseDate) / 365.25)
+  const current = Math.max(0, c * Math.pow(1 - ratePct / 100, years))
+  return { cost: c, current, dep: c - current, pct: c > 0 ? ((c - current) / c) * 100 : 0 }
+}
+export const fmtPct = (n) => `${(Math.round(n * 10) / 10).toLocaleString('en-US')}%`
+
+// ---------- hand tools (held by staff) ----------
+export const HAND_TOOL_CATEGORIES = ['Power tools', 'Hand tools', 'Measuring', 'Electrical testing', 'Safety equipment']
+export const ALLOC_STATUS = {
+  with: { label: 'With employee', tone: 'info' },
+  returned: { label: 'Returned', tone: 'ok' },
+  handed: { label: 'Handed over', tone: 'plain' },
+}
+export const allocStatus = (a) => (a.returnDate ? 'returned' : a.handoverTo ? 'handed' : 'with')
+/** Quantity of a catalog tool currently with employees (optionally ignoring one allocation, when editing it). */
+export const qtyWithStaff = (db, toolRef, exceptId) => (db.allocations || []).filter((a) => a.toolRef === toolRef && a.id !== exceptId && allocStatus(a) === 'with').reduce((s, a) => s + Number(a.qty || 0), 0)
+export const qtyAvailable = (db, t, exceptId) => Number(t.qty || 0) - qtyWithStaff(db, t.id, exceptId)
+/** Next free code such as HT-0001 or OA-0001. */
+export function nextCode(list, key, prefix) {
+  const used = new Set(list.map((x) => String(x[key]).toUpperCase()))
+  let n = list.length + 1
+  while (used.has(`${prefix}-${String(n).padStart(4, '0')}`)) n++
+  return `${prefix}-${String(n).padStart(4, '0')}`
+}
+/** Every employee ID seen in allocations, with the latest name and designation used for it. */
+export function knownEmployees(db) {
+  const m = {}
+  ;(db.allocations || []).forEach((a) => { if (a.empId) m[a.empId.trim().toUpperCase()] = { empId: a.empId.trim(), empName: a.empName, designation: a.designation } })
+  return m
+}
+
+// ---------- office assets (basic version) ----------
+export const OFFICE_CATEGORIES = ['Furniture', 'Computer', 'Equipment', 'Phone', 'Other']
+
+// ---------- total assets (one combined list, read live from each section) ----------
+export const ASSET_TYPES = {
+  handTool: { label: 'Hand tool', plural: 'Hand tools', rate: 'handTools' },
+  warehouseTool: { label: 'Warehouse tool', plural: 'Warehouse tools', rate: 'warehouseTools' },
+  officeAsset: { label: 'Office asset', plural: 'Office assets', rate: 'officeAssets' },
+  vehicle: { label: 'Vehicle', plural: 'Vehicles', rate: 'vehicles' },
+}
+const OUT_CONDITIONS = ['lost', 'scrapped', 'sold']
+/** One row per asset. Nothing is copied: every row is worked out from the section that owns it. */
+export function assetRows(db, asOf = TODAY) {
+  const s = db.settings
+  const rows = []
+  const bal = balances(db)
+  const sites = toolsAtSites(db)
+  const atSites = (id) => sites.reduce((a, x) => a + (x.tools.find((t) => t.id === id)?.q || 0), 0)
+  const add = (r) => {
+    if (r.purchaseDate && r.purchaseDate > asOf) return // bought after the report date
+    const v = depreciate(r.cost, r.purchaseDate, rateOf(s, ASSET_TYPES[r.type].rate), asOf)
+    rows.push({ ...r, missing: !v, dep: v ? v.dep : null, current: v ? v.current : null, cost: v ? v.cost : null, excluded: !!r.inactive || OUT_CONDITIONS.includes(r.condition) })
+  }
+  ;(db.handTools || []).forEach((t) => {
+    const holders = (db.allocations || []).filter((a) => a.toolRef === t.id && allocStatus(a) === 'with')
+    const out = holders.reduce((a, h) => a + Number(h.qty || 0), 0)
+    const inOffice = Number(t.qty || 0) - out
+    const loc = [holders.length ? `With ${[...new Set(holders.map((h) => h.empName))].join(', ')}` : '', inOffice > 0 ? `${inOffice} in office` : ''].filter(Boolean).join(' · ')
+    add({ key: 'ht' + t.id, type: 'handTool', assetId: t.toolId, name: t.name, category: t.category, location: loc || 'Office', place: holders.length ? 'With staff' : 'Office', qty: Number(t.qty || 0), condition: t.condition, conditionLabel: TOOL_CONDITIONS[t.condition]?.label || t.condition, purchaseDate: t.purchaseDate, cost: blank(t.unitValue) ? null : Number(t.unitValue) * Number(t.qty || 0), inactive: t.active === false, open: ['handTool', { id: t.id }] })
+  })
+  db.materials.filter((m) => m.category === 'Tools').forEach((m) => {
+    const site = atSites(m.id)
+    const qty = Math.max(0, (bal[m.id] || 0) + site)
+    const c = toolCondition(m)
+    add({ key: 'wt' + m.id, type: 'warehouseTool', assetId: m.code || m.id.toUpperCase(), name: m.name, category: 'Warehouse tools', location: site ? `Store ${fmtNum(bal[m.id] || 0)} · Sites ${fmtNum(site)}` : 'Warehouse store', place: 'Warehouse', qty, condition: c, conditionLabel: TOOL_CONDITIONS[c].label, purchaseDate: m.purchaseDate || null, cost: blank(m.unitValue) ? null : Number(m.unitValue) * qty, open: ['material', { id: m.id }] })
+  })
+  ;(db.officeAssets || []).forEach((o) => add({ key: 'oa' + o.id, type: 'officeAsset', assetId: o.assetId, name: o.name, category: o.category || 'Other', location: o.location || '—', place: (o.location || 'Office').split('·')[0].trim(), qty: 1, condition: o.condition, conditionLabel: TOOL_CONDITIONS[o.condition]?.label || o.condition || '—', purchaseDate: o.purchaseDate || null, cost: blank(o.purchaseValue) ? null : Number(o.purchaseValue), inactive: o.active === false, open: ['officeAssetForm', { id: o.id }] }))
+  db.vehicles.forEach((v) => add({ key: 'v' + v.id, type: 'vehicle', assetId: v.plate, name: `${v.brand} ${v.model}`.trim(), category: v.type === 'heavy' ? 'Heavy vehicle' : 'Car', location: [v.location, v.user].filter(Boolean).join(' · ') || '—', place: v.location || '—', qty: 1, condition: v.condition, conditionLabel: CONDITIONS[v.condition]?.label || v.condition, purchaseDate: v.purchaseDate || null, cost: v.purchaseValue ? Number(v.purchaseValue) : null, open: ['vehicle', { id: v.id }] }))
+  return rows
+}
+/** Total value report: per asset type and a grand total. Lost, scrapped and deactivated assets are left out; assets with no value are counted separately. */
+export function assetTotals(rows) {
+  const by = Object.keys(ASSET_TYPES).map((type) => {
+    const r = rows.filter((x) => x.type === type && !x.excluded)
+    const valued = r.filter((x) => !x.missing)
+    return { type, label: ASSET_TYPES[type].plural, count: valued.length, missing: r.length - valued.length, cost: valued.reduce((a, x) => a + x.cost, 0), dep: valued.reduce((a, x) => a + x.dep, 0), current: valued.reduce((a, x) => a + x.current, 0) }
+  })
+  const sum = (k) => by.reduce((a, x) => a + x[k], 0)
+  return { by, total: { count: sum('count'), missing: sum('missing'), cost: sum('cost'), dep: sum('dep'), current: sum('current') } }
+}
+
 // ---------- sample data ----------
 function rng(seed) { return () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296 } }
 
@@ -289,11 +390,37 @@ export function sampleDB() {
     D({ name: 'Joseph Thomas', licenseNo: '2501 4476 39', license: addMonths(TODAY, 36), driverCard: addMonths(TODAY, 7), profession: 'Light Driver', phone: '+966 58 245 6610' }),
   ]
 
+  // warehouse tools: purchase details for most of them (a few are left blank to show "Value missing")
+  ;[['m31', 180, 30], ['m32', 1400, 30], ['m33', 90, 30], ['m34', 650, 14], ['m35', 9500, 26], ['m37', 450, 8]].forEach(([id, unitValue, monthsAgo], i) => { const m = materials.find((x) => x.id === id); m.unitValue = unitValue; m.purchaseDate = addMonths(TODAY, -monthsAgo); m.code = 'WT-' + String(i + 1).padStart(4, '0') })
+  const HT = (n, toolId, category, name, qty, monthsAgo, unitValue, condition) => ({ id: 'ht' + n, toolId, category, name, qty, purchaseDate: addMonths(TODAY, -monthsAgo), unitValue, condition, remarks: '', active: true, log: [] })
+  const handTools = [
+    HT(1, 'HT-0001', 'Power tools', 'Bosch cordless drill', 4, 14, 650, 'good'),
+    HT(2, 'HT-0002', 'Measuring', 'Laser distance meter', 3, 8, 420, 'new'),
+    HT(3, 'HT-0003', 'Electrical testing', 'Fluke multimeter', 2, 26, 980, 'fair'),
+    HT(4, 'HT-0004', 'Hand tools', 'Measuring tape 8 m', 10, 5, 35, 'good'),
+    HT(5, 'HT-0005', 'Power tools', 'Makita angle grinder', 2, 20, 540, 'repair'),
+  ]
+  const AL = (n, toolRef, empId, empName, designation, qty, daysAgo, extra = {}) => ({ id: 'al' + n, toolRef, empId, empName, designation, qty, condition: 'good', handoverDate: addDays(TODAY, -daysAgo), returnDate: '', handoverTo: '', remarks: '', log: [{ at: addDays(TODAY, -daysAgo) + 'T09:00:00', by: 'Manager', text: 'Allocated' }], ...extra })
+  const allocations = [
+    AL(1, 'ht1', 'E-1021', 'Abhijith', 'Site engineer', 1, 60),
+    AL(2, 'ht2', 'E-1021', 'Abhijith', 'Site engineer', 1, 60),
+    AL(3, 'ht1', 'E-1034', 'Azeem', 'Site engineer', 1, 40),
+    AL(4, 'ht4', 'E-2210', 'Rashid Ali', 'Electrician', 2, 25),
+    AL(5, 'ht3', 'E-2210', 'Rashid Ali', 'Electrician', 1, 90, { returnDate: addDays(TODAY, -30) }),
+    AL(6, 'ht3', 'E-2245', 'Vinod Kumar', 'Electrician', 1, 28),
+  ]
+  const OA = (n, name, category, location, monthsAgo, purchaseValue, condition) => ({ id: 'oa' + n, assetId: 'OA-' + String(n).padStart(4, '0'), name, category, location, purchaseDate: addMonths(TODAY, -monthsAgo), purchaseValue, condition, remarks: '', active: true })
+  const officeAssets = [
+    OA(1, 'Dell Latitude laptop', 'Computer', 'Dammam HQ · Accounts', 18, 4800, 'good'),
+    OA(2, 'Conference table', 'Furniture', 'Dammam HQ · Meeting room', 40, 3200, 'good'),
+    OA(3, 'HP LaserJet printer', 'Equipment', 'Dammam HQ · Reception', 30, 1900, 'fair'),
+  ]
+
   return {
     version: 1,
     settings: { ...DEFAULT_SETTINGS, periods: { ...DEFAULT_SETTINGS.periods } },
     materials, movements, projects: PROJECTS, engineers: ENGINEERS, vendors: VENDORS,
-    vehicles, drivers,
+    vehicles, drivers, handTools, allocations, officeAssets,
     activity: [
       { id: uid('a'), at: new Date().toISOString(), text: 'Demo data loaded — 38 materials, 11 vehicles, 8 drivers', icon: 'spark' },
     ],

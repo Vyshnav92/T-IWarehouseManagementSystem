@@ -628,3 +628,26 @@ input:focus,select:focus{border-color:var(--red);box-shadow:0 0 0 3px rgba(200,1
 .indem-prog{height:4px;border-radius:4px;background:var(--line);overflow:hidden;margin:0 0 10px}
 .indem-prog span{display:block;height:100%;width:40%;background:var(--red);animation:indemprog 1s linear infinite}
 @keyframes indemprog{from{transform:translateX(-100%)}to{transform:translateX(250%)}}
+
+/* hand tools & total assets */
+.field-e{font-size:12px;color:var(--bad);font-weight:600}
+.field-bad input,.field-bad select,.field-bad textarea{border-color:var(--bad)}
+.field textarea{width:100%;resize:vertical}
+input.ro{background:var(--soft);color:var(--ink2);cursor:default}
+.picker{position:relative}
+.picker-pop{position:absolute;top:calc(100% + 4px);left:0;right:0;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 18px 50px rgba(16,24,40,.16);max-height:260px;overflow:auto;z-index:60;padding:4px}
+.picker-pop .pop-row.on{background:var(--soft)}
+.addbar{display:flex;flex-wrap:wrap;gap:8px}
+.tbl th.sortable{padding:0}
+.sortbtn{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;gap:4px;width:100%;padding:11px 14px;cursor:pointer}
+.tbl th.r .sortbtn{justify-content:flex-end}
+.sortbtn:focus-visible{outline:2px solid var(--red);outline-offset:-2px}
+.raterow{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}
+.raterow:last-of-type{border-bottom:0}
+.raterow b{display:block;font-size:14px}.raterow small{color:var(--muted);font-size:12px}
+.raterow input[type=range]{width:min(180px,40vw)}
+.rate-v{min-width:44px;text-align:right}
+.loglist{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.loglist li{display:flex;gap:12px;font-size:13.5px}
+.mt{margin-top:12px}
+.toast-bad{border-left:4px solid #f87171}

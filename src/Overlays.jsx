@@ -10,6 +10,7 @@ import {
 } from './data'
 import { parseEntry, typicalIssue, simulateReadExpiry, simulateReadBill } from './ai'
 import { Modal, Drawer, Btn, Pill, Field, FileSlot, ExpiryPill, AiTag, Empty, DocViewer, cx, fileUrl, downloadRef } from './ui'
+import { ASSET_OVERLAYS, useFromAssets } from './AssetOverlays'
 
 export default function Overlays() {
   const { stack, close } = useApp()
@@ -291,9 +292,12 @@ function MaterialForm({ onClose }) {
 }
 
 /** Add a tool with just a name. It starts at quantity 0 and condition Good; stock is added later with Stock in. */
-function ToolForm({ onClose }) {
+function ToolForm({ from, onClose }) {
   const { db, update, toast } = useApp()
+  const { cancel, done } = useFromAssets(from, onClose)
   const [name, setName] = useState('')
+  const [purchaseDate, setPurchaseDate] = useState('')
+  const [unitValue, setUnitValue] = useState('')
   const [err, setErr] = useState('')
   const norm = (s) => s.trim().replace(/\s+/g, ' ').toLowerCase()
   const save = () => {
@@ -301,14 +305,18 @@ function ToolForm({ onClose }) {
     if (!n) return setErr('Enter the tool name.')
     const dup = db.materials.find((m) => norm(m.name) === norm(n))
     if (dup) return setErr(`“${dup.name}” is already in the list.`)
-    update((d) => { d.materials.push({ id: uid('m'), name: n, category: 'Tools', unit: 'NOS', opening: 0, min: 0, condition: 'good', conditionLog: [] }) }, `New tool added: ${n}`, 'add')
-    toast('Tool added'); onClose()
+    if (unitValue !== '' && (isNaN(Number(unitValue)) || Number(unitValue) < 0)) return setErr('The value per unit must be 0 or more, or left empty.')
+    if (purchaseDate && purchaseDate > TODAY) return setErr('The date of purchase cannot be in the future.')
+    update((d) => { d.materials.push({ id: uid('m'), name: n, category: 'Tools', unit: 'NOS', opening: 0, min: 0, condition: 'good', conditionLog: [], purchaseDate: purchaseDate || null, unitValue: unitValue === '' ? null : Number(unitValue) }) }, `New tool added: ${n}`, 'add')
+    toast('Tool added'); done(`${n} added`)
   }
   return (
-    <Modal title="Add a tool" sub="Just the name is enough. Add the quantity later with Stock in." icon={Wrench} onClose={onClose} width={480}
-      footer={<><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn icon={Plus} onClick={save}>Add tool</Btn></>}>
-      <form onSubmit={(e) => { e.preventDefault(); save() }}>
-        <Field label="Tool name"><input value={name} onChange={(e) => { setName(e.target.value); setErr('') }} placeholder="e.g. Angle Grinder" autoFocus aria-invalid={!!err} /></Field>
+    <Modal title="Add a tool" sub="Just the name is enough. Add the quantity later with Stock in." icon={Wrench} onClose={cancel} width={520}
+      footer={<><Btn kind="ghost" onClick={cancel}>Cancel</Btn><Btn icon={Plus} onClick={save}>Add tool</Btn></>}>
+      <form className="fgrid" onSubmit={(e) => { e.preventDefault(); save() }}>
+        <Field label="Tool name" span={2}><input value={name} onChange={(e) => { setName(e.target.value); setErr('') }} placeholder="e.g. Angle Grinder" autoFocus aria-invalid={!!err} /></Field>
+        <Field label="Date of purchase (optional)"><input type="date" max={TODAY} value={purchaseDate} onChange={(e) => { setPurchaseDate(e.target.value); setErr('') }} /></Field>
+        <Field label="Value per unit, SAR (optional)" hint="Used for its value in Total assets"><input type="number" min="0" step="0.01" value={unitValue} onChange={(e) => { setUnitValue(e.target.value); setErr('') }} placeholder="0" /></Field>
       </form>
       {err && <div className="formerr"><AlertTriangle size={16} />{err}</div>}
       <p className="muted small">It starts with quantity 0 and condition Good.</p>
@@ -682,8 +690,9 @@ function MaintForm({ vehicleId, maintId, onClose }) {
   )
 }
 
-function VehicleForm({ id, type = 'car', onClose }) {
+function VehicleForm({ id, type = 'car', from, onClose }) {
   const { db, update, toast } = useApp()
+  const { cancel, done } = useFromAssets(from, onClose)
   const ex = id ? db.vehicles.find((x) => x.id === id) : null
   const [f, setF] = useState(() => ex ? { ...ex } : {
     type, plate: '', ownership: 'Company owned', user: '', condition: 'good', brand: '', model: '', year: new Date().getFullYear(), purchaseValue: '', purchaseDate: TODAY, location: '',
@@ -697,12 +706,13 @@ function VehicleForm({ id, type = 'car', onClose }) {
     const clean = { ...f, plate: f.plate.trim().toUpperCase(), year: Number(f.year) || '', purchaseValue: Number(f.purchaseValue) || 0 }
     if (ex) update((d) => { const i = d.vehicles.findIndex((x) => x.id === id); d.vehicles[i] = { ...d.vehicles[i], ...clean } }, `Vehicle ${clean.plate} updated`)
     else update((d) => { d.vehicles.push({ ...clean, id: uid('v'), docs: {}, maintenance: [], indemnityDocs: [] }) }, `New vehicle added: ${clean.plate}`, 'add')
-    toast(ex ? 'Vehicle updated' : 'Vehicle added. Upload its documents next.'); onClose()
+    toast(ex ? 'Vehicle updated' : 'Vehicle added. Upload its documents next.')
+    if (ex) onClose(); else done(`${clean.plate} added`)
   }
   const users = [...db.drivers.map((d) => d.name), ...db.engineers.map((e) => e + ' (Site Eng.)')]
   return (
-    <Modal title={ex ? `Edit ${ex.plate}` : `Add a ${f.type === 'heavy' ? 'heavy vehicle' : 'car'}`} sub="Fill what you know. You can add the rest later." icon={Truck} onClose={onClose} width={760}
-      footer={<><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}>{ex ? 'Save changes' : 'Add vehicle'}</Btn></>}>
+    <Modal title={ex ? `Edit ${ex.plate}` : `Add a ${f.type === 'heavy' ? 'heavy vehicle' : 'car'}`} sub="Fill what you know. You can add the rest later." icon={Truck} onClose={ex ? onClose : cancel} width={760}
+      footer={<><Btn kind="ghost" onClick={ex ? onClose : cancel}>Cancel</Btn><Btn onClick={save}>{ex ? 'Save changes' : 'Add vehicle'}</Btn></>}>
       <div className="fgrid three">
         <Field label="Type"><select value={f.type} onChange={(e) => set('type', e.target.value)}><option value="car">Car</option><option value="heavy">Heavy vehicle</option></select></Field>
         <Field label="Plate no."><input value={f.plate} onChange={(e) => set('plate', e.target.value)} placeholder="e.g. RJA 4821" autoFocus /></Field>
@@ -791,5 +801,6 @@ function DriverForm({ id, onClose }) {
 const MAP = {
   entry: EntryForm, movement: MovementDrawer, material: MaterialDrawer, materialForm: MaterialForm,
   vehicle: VehicleDrawer, vehicleForm: VehicleForm, maint: MaintForm, renew: RenewModal, readDoc: ReadDocModal, toolCondition: ToolConditionModal, toolForm: ToolForm,
+  ...ASSET_OVERLAYS,
   driver: DriverDrawer, driverForm: DriverForm, doc: (p) => <DocViewer fileRef={p.fileRef} title={p.title} onClose={p.onClose} />,
 }

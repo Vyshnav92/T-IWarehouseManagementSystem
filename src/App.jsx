@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   LayoutDashboard, Warehouse as WarehouseIc, Truck, Users, BellRing, FileSpreadsheet, Sparkles, Settings as SettingsIc,
-  Search, Bell, HelpCircle, MessageCircle, Package, ChevronRight, X, Menu,
+  Search, Bell, HelpCircle, MessageCircle, Package, ChevronRight, X, Menu, Wrench, Landmark,
 } from 'lucide-react'
 import { useApp } from './store'
 import { activeReminders, EXPIRY, relDays, hijriToday, TODAY, fmtDate } from './data'
@@ -9,6 +9,8 @@ import { cx, Pill } from './ui'
 import logoDark from './logo_D.png'
 import Home from './pages/Home'
 import Warehouse from './pages/Warehouse'
+import HandTools from './pages/HandTools'
+import Assets from './pages/Assets'
 import { Vehicles, Drivers } from './pages/Fleet'
 import Reminders from './pages/Reminders'
 import Reports from './pages/Reports'
@@ -21,6 +23,8 @@ import Tour from './Tour'
 export const NAV = [
   { id: 'home', label: 'Home', ar: 'الرئيسية', icon: LayoutDashboard, hint: 'Your day at a glance' },
   { id: 'warehouse', label: 'Warehouse', ar: 'المستودع', icon: WarehouseIc, hint: 'Materials in & out' },
+  { id: 'handtools', label: 'Hand tools', ar: 'العدد اليدوية', icon: Wrench, hint: 'Tools held by staff' },
+  { id: 'assets', label: 'Total assets', ar: 'إجمالي الأصول', icon: Landmark, hint: 'Everything the company owns' },
   { id: 'vehicles', label: 'Vehicles', ar: 'المركبات', icon: Truck, hint: 'Cars & heavy vehicles' },
   { id: 'drivers', label: 'Drivers', ar: 'السائقون', icon: Users, hint: 'Licenses & driver cards' },
   { id: 'reminders', label: 'Reminders', ar: 'التنبيهات', icon: BellRing, hint: 'What expires soon' },
@@ -28,7 +32,7 @@ export const NAV = [
   { id: 'smart', label: 'Smart features', ar: 'الذكاء الاصطناعي', icon: Sparkles, hint: 'What AI does for you' },
   { id: 'settings', label: 'Settings', ar: 'الإعدادات', icon: SettingsIc, hint: 'Make it yours' },
 ]
-const PAGES = { home: Home, warehouse: Warehouse, vehicles: Vehicles, drivers: Drivers, reminders: Reminders, reports: Reports, smart: Smart, settings: Settings }
+const PAGES = { home: Home, warehouse: Warehouse, handtools: HandTools, assets: Assets, vehicles: Vehicles, drivers: Drivers, reminders: Reminders, reports: Reports, smart: Smart, settings: Settings }
 
 export default function App() {
   const { route, db, toasts } = useApp()

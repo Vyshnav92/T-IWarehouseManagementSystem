@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { BellRing, TrendingDown, CalendarClock, Sparkles, User, RotateCcw, HelpCircle, X, Plus, ListChecks } from 'lucide-react'
 import { useApp } from '../store'
-import { EXPIRY, fmtSAR } from '../data'
+import { EXPIRY, fmtSAR, DEP_TYPES, rateOf } from '../data'
 import { PageHeader, Btn, cx } from '../ui'
 
 export default function Settings() {
@@ -28,12 +28,9 @@ export default function Settings() {
         </section>
 
         <section className="card set">
-          <header className="set-h"><span className="set-ic"><TrendingDown size={18} /></span><div><h3>Vehicle depreciation</h3><p className="muted small">How much value a vehicle loses each year</p></div></header>
-          <div className="slider">
-            <input type="range" min="5" max="30" value={s.depreciation} onChange={(e) => set((x) => { x.depreciation = Number(e.target.value) })} />
-            <b>{s.depreciation}% per year</b>
-          </div>
-          <p className="muted small">Example: a {fmtSAR(100000)} vehicle is worth {fmtSAR(100000 * Math.pow(1 - s.depreciation / 100, 3))} after 3 years.</p>
+          <header className="set-h"><span className="set-ic"><TrendingDown size={18} /></span><div><h3>Depreciation</h3><p className="muted small">How much value each kind of asset loses every year</p></div></header>
+          {Object.entries(DEP_TYPES).map(([k, t]) => <RateRow key={k} type={k} label={t.label} sub={t.sub} />)}
+          <p className="muted small">The value drops by this percentage every year from the date of purchase, and never goes below zero. Example at {rateOf(s, 'vehicles')}%: a {fmtSAR(100000)} vehicle is worth {fmtSAR(100000 * Math.pow(1 - rateOf(s, 'vehicles') / 100, 3))} after 3 years. Changes update Vehicles, Hand tools and Total assets straight away.</p>
         </section>
 
         <section className="card set">
@@ -72,6 +69,30 @@ export default function Settings() {
           </div>
         </section>
       </div>
+    </div>
+  )
+}
+
+/** One depreciation rate. The change is logged once, with the old and new rate, when the user lets go of the slider. */
+function RateRow({ type, label, sub }) {
+  const { db, update, toast } = useApp()
+  const rate = rateOf(db.settings, type)
+  const startRef = useRef(null)
+  const setRate = (n) => update((d) => { if (type === 'vehicles') d.settings.depreciation = n; else d.settings.depRates = { ...(d.settings.depRates || {}), [type]: n } })
+  const begin = () => { if (startRef.current === null) startRef.current = rate }
+  const commit = () => {
+    const from = startRef.current
+    startRef.current = null
+    if (from === null || from === rate) return
+    update(() => {}, `Depreciation for ${label} changed from ${from}% to ${rate}% by ${db.settings.managerName || 'Manager'}`, 'edit')
+    toast(`${label}: ${rate}% per year`)
+  }
+  return (
+    <div className="raterow">
+      <span className="grow"><b>{label}</b><small>{sub}</small></span>
+      <input type="range" min="0" max="50" value={rate} aria-label={`${label} depreciation per year`} onPointerDown={begin} onKeyDown={begin} onFocus={begin}
+        onChange={(e) => { begin(); setRate(Number(e.target.value)) }} onPointerUp={commit} onKeyUp={commit} onBlur={commit} />
+      <b className="num rate-v">{rate}%</b>
     </div>
   )
 }
