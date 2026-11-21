@@ -38,7 +38,7 @@ export default function Assistant() {
     <aside className="asst" role="dialog" aria-label="Assistant">
       <header className="asst-h">
         <span className="asst-av"><Sparkles size={18} /></span>
-        <div className="grow"><b>T&amp;I Assistant</b><small>Knows your stock, vehicles and drivers</small></div>
+        <div className="grow"><b>AbhiChat AI</b><small>Knows your stock, vehicles and drivers</small></div>
         <button className="iconbtn" onClick={closeAssistant} aria-label="Close"><X size={20} /></button>
       </header>
       <div className="asst-b">
