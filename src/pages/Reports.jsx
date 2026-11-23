@@ -1,72 +1,46 @@
 import { useMemo, useState } from 'react'
-import { Boxes, ArrowDownToLine, ArrowUpFromLine, Truck, Users, Wrench, BellRing, FileSpreadsheet, FileDown, CalendarRange, Hammer, Landmark } from 'lucide-react'
+import { Boxes, ArrowDownToLine, ArrowUpFromLine, Truck, Users, Wrench, BellRing, FileSpreadsheet, FileDown, CalendarRange, Landmark, Receipt, Search, Download } from 'lucide-react'
 import { useApp } from '../store'
-import { balances, stockStatus, STOCK_STATUS, KINDS, fmtDate, daysUntil, CONDITIONS, currentValue, allExpiries, EXPIRY, addDays, TODAY } from '../data'
+import { balances, stockStatus, STOCK_STATUS, KINDS, fmtDate, daysUntil, CONDITIONS, currentValue, allExpiries, EXPIRY, addDays, TODAY, stockMaterials, lowLimit, issueValue, fmt2, fmtNum, round2 } from '../data'
 import { PageHeader, Btn, cx } from '../ui'
-import { exportExcel, exportPdf } from '../exporter'
+import { exportExcel, exportPdf, downloadVoucher } from '../exporter'
 import { assetReportData } from '../AssetOverlays'
 
 const REPORTS = [
   { id: 'stock', label: 'Current stock', icon: Boxes, desc: 'Every material with what you have now', dated: false },
   { id: 'in', label: 'Stock in', icon: ArrowDownToLine, desc: 'Purchases and returns from sites', dated: true },
   { id: 'out', label: 'Stock out', icon: ArrowUpFromLine, desc: 'Materials sent to projects', dated: true },
+  { id: 'invoice', label: 'Stock out invoice', icon: Receipt, desc: 'Each stock out with its value, and an invoice PDF', dated: true },
   { id: 'vehicles', label: 'Vehicles', icon: Truck, desc: 'Full fleet list with expiry dates and value', dated: false },
   { id: 'drivers', label: 'Drivers', icon: Users, desc: 'Licenses and driver cards', dated: false },
   { id: 'maintenance', label: 'Maintenance', icon: Wrench, desc: 'Workshop costs per vehicle', dated: true },
   { id: 'reminders', label: 'Expiry list', icon: BellRing, desc: 'Everything that expires in the next 90 days', dated: false },
-  { id: 'tools', label: 'Monthly tools', icon: Hammer, desc: 'Tools in and out for one month', monthly: true },
   { id: 'assets', label: 'Total assets value', icon: Landmark, desc: 'Current value by asset type, with a grand total', dated: false },
 ]
 
-const monthRange = (ym) => { const [y, m] = ym.split('-').map(Number); return { from: `${ym}-01`, to: `${ym}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}` } }
-const monthLabel = (ym) => new Date(ym + '-15').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
-const prevMonth = () => { const [y, m] = TODAY.split('-').map(Number); return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}` }
-
-/** Monthly tools report. Every figure comes from the recorded movements, so any past month always regenerates the same. */
-function buildTools(db, ym) {
-  const { from, to } = monthRange(ym)
-  const tools = db.materials.filter((m) => m.category === 'Tools')
-  const ids = new Set(tools.map((m) => m.id))
-  const mvs = db.movements.filter((mv) => !mv.cancelled && mv.date <= to)
-  const sum = { opening: {}, in: {}, out: {} }
-  tools.forEach((m) => { sum.opening[m.id] = m.opening; sum.in[m.id] = 0; sum.out[m.id] = 0 })
-  const atSite = {} // project -> tool -> { q, last }
-  const moves = []
-  mvs.forEach((mv) => mv.lines.forEach((l) => {
-    if (!ids.has(l.materialId)) return
-    const q = Number(l.qty) || 0
-    const isIn = KINDS[mv.kind].group === 'in'
-    if (mv.date < from) sum.opening[l.materialId] += isIn ? q : -q
-    else { sum[isIn ? 'in' : 'out'][l.materialId] += q; moves.push({ mv, l, q, isIn }) }
-    if (mv.kind !== 'purchase' && mv.project) {
-      const s = (atSite[mv.project] ||= {}); const t = (s[l.materialId] ||= { q: 0, last: null })
-      t.q += mv.kind === 'issue' ? q : -q
-      if (mv.kind === 'issue') t.last = mv.date
-    }
-  }))
-  const name = (id) => tools.find((m) => m.id === id)
-  const outstanding = []
-  Object.entries(atSite).forEach(([project, t]) => Object.entries(t).forEach(([id, x]) => { if (x.q > 0) outstanding.push([project, name(id).name, x.q, name(id).unit, x.last ? fmtDate(x.last) : '—']) }))
-  outstanding.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]))
-  const stillOut = (id) => outstanding.filter((r) => r[1] === name(id).name).reduce((a, r) => a + r[2], 0)
-  const summary = tools.map((m) => { const o = sum.opening[m.id], i = sum.in[m.id], u = sum.out[m.id]; return [m.name, m.unit, o, i, u, o + i - u, stillOut(m.id)] })
-  const movements = moves.map(({ mv, l, q, isIn }) => [fmtDate(mv.date), mv.no, name(l.materialId).name, q, isIn ? 'In' : 'Out', KINDS[mv.kind].label, mv.kind === 'purchase' ? mv.vendor || '' : mv.project || '', mv.engineer || mv.reqName || '', mv.billNo || mv.mtn || mv.reqNo || ''])
-  return {
-    sections: [
-      { title: 'Summary', columns: ['Tool', 'Unit', 'Opening', 'In', 'Out', 'Closing', 'Still out at sites'], rows: summary },
-      { title: 'Movements', columns: ['Date', 'No.', 'Tool', 'Qty', 'In / Out', 'Type', 'Site / supplier', 'Person', 'Document no.'], rows: movements, empty: 'No tools went in or out this month.' },
-      { title: 'Still out at sites at month end', columns: ['Site', 'Tool', 'Qty', 'Unit', 'Last sent'], rows: outstanding, empty: 'All tools were back in the store.' },
-    ],
-  }
-}
-
-function build(id, db, from, to) {
+function build(id, db, from, to, { q = '', project = '' } = {}) {
   const inRange = (d) => (!from || d >= from) && (!to || d <= to)
   const mat = (mid) => db.materials.find((m) => m.id === mid) || {}
   const s = db.settings
   if (id === 'stock') {
     const b = balances(db)
-    return { columns: ['#', 'Material', 'Category', 'Unit', 'In stock', 'Minimum', 'Status'], rows: db.materials.map((m, i) => [i + 1, m.name, m.category, m.unit, b[m.id], m.min, STOCK_STATUS[stockStatus(b[m.id], m.min)].label]) }
+    return { columns: ['#', 'Material', 'Category', 'Unit', 'In stock', 'Status'], rows: stockMaterials(db).map((m, i) => [i + 1, m.name, m.category, m.unit, b[m.id], STOCK_STATUS[stockStatus(b[m.id], lowLimit(db))].label]) }
+  }
+  if (id === 'invoice') {
+    const s = q.trim().toLowerCase()
+    const list = db.movements.filter((mv) => !mv.cancelled && mv.kind === 'issue' && inRange(mv.date) && (!project || mv.project === project) && (!s || [mv.no, mv.project, mv.reqName, mv.engineer].join(' ').toLowerCase().includes(s))).reverse()
+    let total = 0, missing = 0
+    const rows = list.map((mv) => {
+      const v = issueValue(mv)
+      total += v.total; missing += v.missing
+      return [mv.no, fmtDate(mv.date), mv.project, mv.reqName || '—', mv.engineer || '—', mv.lines.map((l) => `${fmtNum(l.qty)} x ${mat(l.materialId).name}`).join(', '),
+        v.missing === mv.lines.length ? 'Price not set' : v.missing ? `${fmt2(v.total)} *` : v.total]
+    })
+    return {
+      columns: ['No.', 'Date', 'Project', 'Requested by', 'Site engineer', 'Details', 'Value (SAR)'], rows, invoices: list,
+      totalRow: ['', '', '', '', '', 'Total', round2(total)],
+      note: missing ? `* and "Price not set": the total excludes ${missing} item${missing > 1 ? 's' : ''} without a price.` : undefined,
+    }
   }
   if (id === 'in' || id === 'out') {
     const rows = []
@@ -102,18 +76,20 @@ export default function Reports() {
   const [id, setId] = useState('stock')
   const [from, setFrom] = useState(addDays(TODAY, -30))
   const [to, setTo] = useState(TODAY)
-  const [month, setMonth] = useState(prevMonth)
+  const [q, setQ] = useState('')
+  const [project, setProject] = useState('')
   const R = REPORTS.find((r) => r.id === id)
-  const data = useMemo(() => (R.monthly ? buildTools(db, month) : build(id, db, R.dated ? from : null, R.dated ? to : null)), [id, db, from, to, month, R.dated, R.monthly])
-  const sections = data.sections || [{ columns: data.columns, rows: data.rows, totalRow: data.totalRow }]
+  const data = useMemo(() => build(id, db, R.dated ? from : null, R.dated ? to : null, { q, project }), [id, db, from, to, R.dated, q, project])
+  const sections = data.sections || [{ columns: data.columns, rows: data.rows, totalRow: data.totalRow, note: data.note, invoices: data.invoices }]
+  const pick = (r) => { setId(r.id); if (r.id === 'invoice') { setFrom(TODAY.slice(0, 8) + '01'); setTo(TODAY) } } // the invoice report opens on this month
   const rowCount = sections.reduce((a, s) => a + s.rows.length, 0)
   const title = `${R.label} report`
   const generated = new Date().toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-  const sub = R.monthly ? monthLabel(month) : R.dated ? `${fmtDate(from)} to ${fmtDate(to)}` : `As of ${fmtDate(TODAY)}`
-  const fname = `TI_${R.label.replace(/\s+/g, '_')}_${R.monthly ? month : TODAY}`
+  const sub = (R.dated ? `${fmtDate(from)} to ${fmtDate(to)}` : `As of ${fmtDate(TODAY)}`) + (id === 'invoice' && project ? ` · ${project}` : '')
+  const fname = `TI_${R.label.replace(/\s+/g, '_')}_${TODAY}`
 
   const excel = async () => {
-    await exportExcel({ title, sub: sub + (R.monthly || id === 'assets' ? ` · Generated ${generated}` : ''), sections, fname, sheet: R.label })
+    await exportExcel({ title, sub: sub + (id === 'assets' ? ` · Generated ${generated}` : ''), sections, fname, sheet: R.label })
     update(() => {}, `${title} downloaded as Excel`, 'add')
     toast('Excel file downloaded')
   }
@@ -128,7 +104,7 @@ export default function Reports() {
       <PageHeader title="Reports" ar="التقارير" desc="Pick a report, check the preview, then download it as Excel or PDF to print, email or share on WhatsApp." />
       <div className="reppick">
         {REPORTS.map((r) => (
-          <button key={r.id} className={cx('repcard', id === r.id && 'on')} onClick={() => setId(r.id)}>
+          <button key={r.id} className={cx('repcard', id === r.id && 'on')} onClick={() => pick(r)}>
             <span className="repcard-ic"><r.icon size={20} /></span><b>{r.label}</b><small>{r.desc}</small>
           </button>
         ))}
@@ -138,7 +114,10 @@ export default function Reports() {
           <div><h3>{title}</h3><span className="muted small">{sub} · {rowCount} rows</span></div>
           <span className="grow" />
           {R.dated && <div className="range"><CalendarRange size={16} /><input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} /><span>to</span><input type="date" value={to} min={from} max={TODAY} onChange={(e) => setTo(e.target.value)} /></div>}
-          {R.monthly && <div className="range"><CalendarRange size={16} /><span>Month</span><input type="month" value={month} max={TODAY.slice(0, 7)} onChange={(e) => e.target.value && setMonth(e.target.value)} aria-label="Report month" /></div>}
+          {id === 'invoice' && <>
+            <div className="search sm"><Search size={16} className="search-ic" /><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search no., project, requester…" /></div>
+            <select className="sel" value={project} onChange={(e) => setProject(e.target.value)} aria-label="Project"><option value="">All projects</option>{db.projects.map((p) => <option key={p}>{p}</option>)}</select>
+          </>}
           <Btn kind="excel" icon={FileSpreadsheet} onClick={excel} disabled={!rowCount}>Excel</Btn>
           <Btn kind="dark" icon={FileDown} onClick={pdf} disabled={!rowCount}>PDF</Btn>
         </div>
@@ -147,9 +126,10 @@ export default function Reports() {
             <div key={k}>
               {s.title && <h4 className="rep-sec">{s.title}</h4>}
               <table className="tbl">
-                <thead><tr>{s.columns.map((c) => <th key={c}>{c}</th>)}</tr></thead>
-                <tbody>{s.rows.slice(0, 60).map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j} className={typeof c === 'number' ? 'num' : ''}>{typeof c === 'number' ? c.toLocaleString() : c}</td>)}</tr>)}</tbody>
-                {s.totalRow && s.rows.length > 0 && <tfoot><tr>{s.totalRow.map((c, j) => <td key={j} className={typeof c === 'number' ? 'num' : ''}><b>{typeof c === 'number' ? c.toLocaleString() : c}</b></td>)}</tr></tfoot>}
+                <thead><tr>{s.columns.map((c) => <th key={c}>{c}</th>)}{s.invoices && <th>Invoice</th>}</tr></thead>
+                <tbody>{s.rows.slice(0, 60).map((r, i) => <tr key={i}>{r.map((c, j) => <td key={j} className={typeof c === 'number' ? 'num' : ''}>{typeof c === 'number' ? c.toLocaleString() : c}</td>)}
+                  {s.invoices && <td><button className="iconbtn sm" title="Download invoice" aria-label={`Download invoice ${s.invoices[i].no}`} onClick={() => downloadVoucher(s.invoices[i], db, toast, true)}><Download size={17} /></button></td>}</tr>)}</tbody>
+                {s.totalRow && s.rows.length > 0 && <tfoot><tr>{s.totalRow.map((c, j) => <td key={j} className={typeof c === 'number' ? 'num' : ''}><b>{typeof c === 'number' ? c.toLocaleString() : c}</b></td>)}{s.invoices && <td />}</tr></tfoot>}
               </table>
               {s.rows.length > 60 && <p className="muted small pad">Showing 60 of {s.rows.length} rows. The download has all of them.</p>}
               {!s.rows.length && <p className="muted pad">{s.empty || 'Nothing in this period. Try a wider date range.'}</p>}

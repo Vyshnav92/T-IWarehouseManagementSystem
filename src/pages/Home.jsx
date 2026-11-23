@@ -29,7 +29,7 @@ export default function Home() {
 
   const attention = [
     ...rem.map((r) => ({ id: r.id, tone: r.days < 0 ? 'bad' : 'warn', icon: r.entity === 'vehicle' ? Truck : Users, title: `${r.title} · ${EXPIRY[r.key].short}`, meta: r.days < 0 ? `Expired ${-r.days} days ago` : `Expires ${relDays(r.days)}`, pill: r.days < 0 ? 'Expired' : r.days === 0 ? 'Today' : `${r.days} days`, act: () => open('renew', { entity: r.entity, id: r.entityId, expKey: r.key }), actLabel: 'Renew', row: () => open(r.entity, { id: r.entityId }), sort: r.days })),
-    ...low.map((f) => ({ id: f.m.id, tone: f.status === 'out' ? 'bad' : 'warn', icon: Package, title: f.m.name, meta: `${fmtNum(f.bal)} ${f.m.unit} left · minimum ${f.m.min}`, pill: STOCK_STATUS[f.status].label, act: () => open('entry', { kind: 'purchase', prefill: { kind: 'purchase', lines: [{ materialId: f.m.id, qty: f.suggest || '' }] } }), actLabel: 'Order', row: () => open('material', { id: f.m.id }), sort: f.status === 'out' ? -0.5 : 5 })),
+    ...low.map((f) => ({ id: f.m.id, tone: f.status === 'out' ? 'bad' : 'warn', icon: Package, title: f.m.name, meta: `${fmtNum(f.bal)} ${f.m.unit} left · below ${db.settings.lowStock}`, pill: STOCK_STATUS[f.status].label, act: () => open('entry', { kind: 'purchase', prefill: { kind: 'purchase', lines: [{ materialId: f.m.id, qty: f.suggest || '' }] } }), actLabel: 'Order', row: () => open('material', { id: f.m.id }), sort: f.status === 'out' ? -0.5 : 5 })),
   ].sort((a, b) => a.sort - b.sort)
 
   return (

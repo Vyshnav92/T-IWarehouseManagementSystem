@@ -1,19 +1,20 @@
-import { Truck, Users, CalendarCheck, ChevronRight, BellRing, CheckCircle2, MessageSquare, Mail, Smartphone, PartyPopper } from 'lucide-react'
+import { Truck, Users, Package, CalendarCheck, ChevronRight, BellRing, CheckCircle2, MessageSquare, Mail, Smartphone, PartyPopper } from 'lucide-react'
 import { useApp } from '../store'
-import { allExpiries, EXPIRY, fmtDate, relDays, reminderNo } from '../data'
+import { allExpiries, EXPIRY, fmtDate, relDays, reminderNo, lowStock, lowLimit, fmtNum } from '../data'
 import { PageHeader, Btn, Pill, cx } from '../ui'
 
 export default function Reminders() {
   const { db, open } = useApp()
   const s = db.settings
   const all = allExpiries(db)
+  const low = lowStock(db)
   const groups = [
     { id: 'expired', title: 'Already expired', sub: 'Renew these first. They may already be causing fines.', tone: 'bad', rows: all.filter((e) => e.days < 0) },
     { id: 'week', title: 'This week', sub: 'Expires in the next 7 days', tone: 'warn', rows: all.filter((e) => e.days >= 0 && e.days <= 7) },
     { id: 'window', title: `In ${s.remindDays} days`, sub: 'Reminders have started', tone: 'warn', rows: all.filter((e) => e.days > 7 && e.days <= s.remindDays) },
     { id: 'later', title: 'Coming up later', sub: 'Next 60 days. No reminders yet, shown so you can plan', tone: 'info', rows: all.filter((e) => e.days > s.remindDays && e.days <= 60) },
   ]
-  const active = groups[0].rows.length + groups[1].rows.length + groups[2].rows.length
+  const active = groups[0].rows.length + groups[1].rows.length + groups[2].rows.length + low.length
   return (
     <div className="page">
       <PageHeader title="Reminders" ar="التنبيهات" desc="Every date that can expire, for vehicles and drivers, in one list. Renew something and it leaves the list."
@@ -40,6 +41,23 @@ export default function Reminders() {
       </div>
 
       {active === 0 && <div className="allgood"><PartyPopper size={28} /><div><b>All clear!</b><p className="muted">Nothing has expired and nothing expires in the next {s.remindDays} days.</p></div></div>}
+
+      {low.length > 0 && (
+        <section className="remgroup rg-warn">
+          <header><h3>Stock running low <Pill tone="warn">{low.length}</Pill></h3><span className="muted small">Warehouse materials below {lowLimit(db)}. Each one clears by itself once stock is back.</span></header>
+          <div className="remlist">
+            {low.map((f) => (
+              <div key={f.m.id} className="rem" onClick={() => open('material', { id: f.m.id })} role="button" tabIndex={0}>
+                <span className={cx('rem-ic', f.status === 'out' ? 'bad' : 'warn')}><Package size={19} /></span>
+                <div className="rem-main"><b>{f.m.name}: {fmtNum(f.bal)} {f.m.unit} left (below {lowLimit(db)})</b><span className="rem-who muted">{f.m.category}</span></div>
+                <div className="rem-when"><b className={f.status === 'out' ? 'badc' : 'warnc'}>{f.status === 'out' ? 'Out of stock' : 'Running low'}</b></div>
+                <Btn size="sm" icon={Package} onClick={(ev) => { ev.stopPropagation(); open('entry', { kind: 'purchase', prefill: { kind: 'purchase', lines: [{ materialId: f.m.id, qty: f.suggest || '' }] } }) }}>Order</Btn>
+                <ChevronRight size={18} className="muted hide-sm" />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {groups.map((g) => g.rows.length > 0 && (
         <section key={g.id} className={cx('remgroup', 'rg-' + g.tone)}>

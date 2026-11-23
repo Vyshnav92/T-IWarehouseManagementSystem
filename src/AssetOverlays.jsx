@@ -440,7 +440,7 @@ function AssetReport({ type: t0 = 'all', onClose }) {
         <tfoot><tr><td><b>Grand total</b></td><td className="r num"><b>{r.total.count}</b></td><td className="r num"><b>{fmtSAR(r.total.cost)}</b></td><td className="r num"><b>{fmtSAR(r.total.dep)}</b></td><td className="r num"><b className="qtybig">{fmtSAR(r.total.current)}</b></td></tr></tfoot>
       </table></div>
       {r.note && <p className="muted small mt"><AlertTriangle size={14} /> {r.note}</p>}
-      <p className="muted small">Depreciation rates: {['vehicles', 'handTools', 'warehouseTools', 'officeAssets'].map((k) => `${k === 'vehicles' ? 'Vehicles' : k === 'handTools' ? 'Hand tools' : k === 'warehouseTools' ? 'Warehouse tools' : 'Office assets'} ${rateOf(db.settings, k)}%`).join(' · ')} per year. Change them in Settings.</p>
+      <p className="muted small">Depreciation rates: {['vehicles', 'handTools', 'officeAssets'].map((k) => `${k === 'vehicles' ? 'Vehicles' : k === 'handTools' ? 'Hand tools' : 'Office assets'} ${rateOf(db.settings, k)}%`).join(' · ')} per year. Change them in Settings.</p>
     </Modal>
   )
 }

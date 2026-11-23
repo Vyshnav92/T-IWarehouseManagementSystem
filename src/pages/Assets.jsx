@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Search, FileSpreadsheet, FileDown, BarChart3, Wrench, Hammer, Building2, Truck, ChevronUp, ChevronDown, Landmark } from 'lucide-react'
+import { Search, FileSpreadsheet, FileDown, BarChart3, Wrench, Building2, Truck, ChevronUp, ChevronDown, Landmark } from 'lucide-react'
 import { useApp } from '../store'
 import { assetRows, assetTotals, ASSET_TYPES, TOOL_CONDITIONS, CONDITIONS, fmtDate, fmtSAR, TODAY, rateOf } from '../data'
 import { PageHeader, Btn, Pill, Empty, cx } from '../ui'
@@ -10,7 +10,7 @@ const COLS = [
   ['type', 'Asset type'], ['assetId', 'Asset ID'], ['name', 'Name'], ['category', 'Category'], ['location', 'Location / held by'],
   ['conditionLabel', 'Condition'], ['purchaseDate', 'Date of purchase'], ['cost', 'Purchase value', 'r'], ['dep', 'Depreciation', 'r'], ['current', 'Current value', 'r'],
 ]
-const TYPE_TONE = { handTool: 'info', warehouseTool: 'warn', officeAsset: 'plain', vehicle: 'ok' }
+const TYPE_TONE = { handTool: 'info', officeAsset: 'plain', vehicle: 'ok' }
 
 export default function Assets() {
   const { db, go, open, toast } = useApp()
@@ -55,12 +55,11 @@ export default function Assets() {
 
   return (
     <div className="page">
-      <PageHeader title="Total assets" ar="إجمالي الأصول" desc="Everything the company owns in one list: hand tools, warehouse tools, office assets and vehicles, with what each is worth today."
-        how={['This list reads straight from Hand tools, Warehouse, Vehicles and office assets. Change something there and it shows here at once.', 'Use the Add buttons to add an asset. Each one opens the form in its own section.', 'Current value is the purchase value minus depreciation. Change the rates in Settings.', 'Press Report for the total value by asset type, ready for Excel, PDF or printing.']}
+      <PageHeader title="Total assets" ar="إجمالي الأصول" desc="Everything the company owns in one list: hand tools, office assets and vehicles, with what each is worth today."
+        how={['This list reads straight from Hand tools, Vehicles and office assets. Change something there and it shows here at once.', 'Use the Add buttons to add an asset. Each one opens the form in its own section.', 'Current value is the purchase value minus depreciation. Change the rates in Settings.', 'Press Report for the total value by asset type, ready for Excel, PDF or printing.']}
         actions={<Btn icon={BarChart3} onClick={() => open('assetReport')}>Report</Btn>} />
       <div className="addbar">
         <Btn kind="ghost" icon={Wrench} onClick={() => addFrom('handtools', null, 'handToolForm')}>Add hand tool</Btn>
-        <Btn kind="ghost" icon={Hammer} onClick={() => addFrom('warehouse', 'tools', 'toolForm')}>Add warehouse tool</Btn>
         <Btn kind="ghost" icon={Building2} onClick={() => open('officeAssetForm')}>Add office asset</Btn>
         <Btn kind="ghost" icon={Truck} onClick={() => addFrom('vehicles', null, 'vehicleForm', { type: 'car' })}>Add vehicle</Btn>
       </div>
@@ -112,7 +111,7 @@ export default function Assets() {
           {!rows.length && <Empty icon={Landmark} title="No assets match" text="Try a different word or filter." />}
         </div>
       </section>
-      <p className="muted small">Depreciation per year: Vehicles {rateOf(db.settings, 'vehicles')}% · Hand tools {rateOf(db.settings, 'handTools')}% · Warehouse tools {rateOf(db.settings, 'warehouseTools')}% · Office assets {rateOf(db.settings, 'officeAssets')}%. <button className="linkish" onClick={() => go('settings')}>Change in Settings</button></p>
+      <p className="muted small">Depreciation per year: Vehicles {rateOf(db.settings, 'vehicles')}% · Hand tools {rateOf(db.settings, 'handTools')}% · Office assets {rateOf(db.settings, 'officeAssets')}%. <button className="linkish" onClick={() => go('settings')}>Change in Settings</button></p>
     </div>
   )
 }
