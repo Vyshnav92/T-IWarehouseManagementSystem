@@ -570,6 +570,7 @@ input:focus,select:focus{border-color:var(--red);box-shadow:0 0 0 3px rgba(200,1
 .toasts{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;z-index:100;align-items:center;pointer-events:none}
 .toast{background:var(--ink);color:#fff;padding:11px 18px;border-radius:12px;font-size:14px;font-weight:500;box-shadow:0 10px 30px rgba(0,0,0,.25);animation:fadeup .25s ease;max-width:min(560px,calc(100vw - 32px))}
 .toast-ok{border-left:4px solid #4ade80}.toast-warn{border-left:4px solid #fbbf24}
+.toast-act{pointer-events:auto;margin-left:12px;background:#fff;color:var(--ink);border:0;border-radius:8px;padding:5px 10px;font:inherit;font-weight:600;cursor:pointer}
 .daily{position:fixed;top:78px;right:24px;width:340px;background:#fff;border-radius:16px;box-shadow:0 24px 60px rgba(16,24,40,.22);border:1px solid var(--line);padding:14px;z-index:45;display:flex;flex-direction:column;gap:6px;animation:slidein .4s ease}
 @keyframes slidein{from{transform:translateX(30px);opacity:0}}
 .daily-h{display:flex;gap:10px;align-items:center;margin-bottom:4px}

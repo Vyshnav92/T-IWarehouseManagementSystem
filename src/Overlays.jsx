@@ -11,6 +11,7 @@ import {
 import { parseEntry, typicalIssue, simulateReadExpiry, simulateReadBill } from './ai'
 import { Modal, Drawer, Btn, Pill, Field, FileSlot, ExpiryPill, AiTag, Empty, DocViewer, cx, fileUrl, downloadRef } from './ui'
 import { ASSET_OVERLAYS, useFromAssets } from './AssetOverlays'
+import { downloadVoucher } from './exporter'
 
 export default function Overlays() {
   const { stack, close } = useApp()
@@ -92,13 +93,15 @@ function EntryForm({ kind: k0 = 'issue', prefill, onClose }) {
     if (kind !== 'purchase' && !f.project.trim()) return setErr('Which project or site? Enter the project name.')
     if (blocking) return setErr('Fix the red line first: there is not enough stock.')
     const no = nextNo(db, kind)
+    const mv = { id: uid('mv'), no, kind, ...f, lines: valid.map((l) => ({ materialId: l.materialId, qty: Number(l.qty) })), attachments: files, cancelled: false, createdAt: new Date().toISOString() }
     update((d) => {
-      d.movements.push({ id: uid('mv'), no, kind, ...f, lines: valid.map((l) => ({ materialId: l.materialId, qty: Number(l.qty) })), attachments: files, cancelled: false, createdAt: new Date().toISOString() })
+      d.movements.push(mv)
       if (f.project && !d.projects.includes(f.project)) d.projects.push(f.project)
       if (f.vendor && !d.vendors.includes(f.vendor)) d.vendors.push(f.vendor)
       if (f.engineer && !d.engineers.includes(f.engineer)) d.engineers.push(f.engineer)
     }, `${K.label} ${no} saved, ${valid.length} material${valid.length > 1 ? 's' : ''}${f.project ? ' · ' + f.project : f.vendor ? ' · ' + f.vendor : ''}`, kind)
-    toast(`${no} saved. Stock ${K.group === 'in' ? 'increased' : 'reduced'} for ${valid.length} material${valid.length > 1 ? 's' : ''}.`)
+    toast(`${no} saved. Stock ${K.group === 'in' ? 'increased' : 'reduced'} for ${valid.length} material${valid.length > 1 ? 's' : ''}.`, 'ok',
+      kind === 'issue' ? { label: 'Download voucher', run: () => downloadVoucher(mv, db, toast) } : undefined)
     onClose()
   }
 
@@ -140,7 +143,10 @@ function EntryForm({ kind: k0 = 'issue', prefill, onClose }) {
         {kind !== 'purchase' && <>
           <Field label="Project / site"><input list="dl-projects" value={f.project} onChange={(e) => set('project', e.target.value)} placeholder="Which site?" /></Field>
           <Field label="Site engineer"><input list="dl-eng" value={f.engineer} onChange={(e) => set('engineer', e.target.value)} placeholder="Name" /></Field>
-          {kind === 'issue' && <Field label="Request no."><input value={f.reqNo} onChange={(e) => set('reqNo', e.target.value)} placeholder="e.g. 512" /></Field>}
+          {kind === 'issue' && <>
+            <Field label="Request no."><input value={f.reqNo} onChange={(e) => set('reqNo', e.target.value)} placeholder="e.g. 512" /></Field>
+            <Field label="Requested by"><input list="dl-eng" value={f.reqName} onChange={(e) => set('reqName', e.target.value)} placeholder="Name" /></Field>
+          </>}
           <Field label="Material transfer no. (MTN)"><input value={f.mtn} onChange={(e) => set('mtn', e.target.value)} placeholder="e.g. 1502" /></Field>
         </>}
       </div>
@@ -205,6 +211,7 @@ function MovementDrawer({ id, onClose }) {
       <h4 className="sec">Materials</h4>
       <table className="tbl"><thead><tr><th>Material</th><th className="r">Quantity</th></tr></thead>
         <tbody>{mv.lines.map((l, i) => { const m = db.materials.find((x) => x.id === l.materialId); return <tr key={i} className="click" onClick={() => open('material', { id: m.id })}><td>{m?.name}</td><td className="r num"><b>{K.sign > 0 ? '+' : '−'}{fmtNum(l.qty)}</b> {m?.unit}</td></tr> })}</tbody></table>
+      {mv.kind === 'issue' && <Btn kind="dark" size="sm" icon={Download} onClick={() => downloadVoucher(mv, db, toast)}>Download voucher</Btn>}
       {mv.attachments?.length > 0 && <><h4 className="sec">Attachments</h4>{mv.attachments.map((a) => <FileSlot key={a.id} label="Vendor bill" fileRef={a} onUpload={() => {}} />)}</>}
       {!mv.cancelled && (
         <div className="danger-zone">
