@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { BellRing, TrendingDown, CalendarClock, Sparkles, User, RotateCcw, HelpCircle, X, Plus, ListChecks } from 'lucide-react'
+import { BellRing, TrendingDown, CalendarClock, Sparkles, User, RotateCcw, HelpCircle, X, Plus, ListChecks, Package } from 'lucide-react'
 import { useApp } from '../store'
 import { EXPIRY, fmtSAR, DEP_TYPES, rateOf } from '../data'
 import { PageHeader, Btn, cx } from '../ui'
@@ -25,6 +25,12 @@ export default function Settings() {
             <b>{s.remindDays} days before</b>
           </div>
           <div className="presets">{[7, 10, 15, 30].map((n) => <button key={n} className={cx('chip', s.remindDays === n && 'on')} onClick={() => set((x) => { x.remindDays = n }, `Reminders now start ${n} days before`)}>{n} days</button>)}</div>
+        </section>
+
+        <section className="card set">
+          <header className="set-h"><span className="set-ic"><Package size={18} /></span><div><h3>Low stock reminder</h3><p className="muted small">A material below this quantity shows as Running low and gets a reminder</p></div></header>
+          <label className="field"><span className="field-l">Remind me when stock is below</span>
+            <input type="number" min="1" key={s.lowStock} defaultValue={s.lowStock} onBlur={(e) => { const n = Math.round(Number(e.target.value)); if (n >= 1 && n !== s.lowStock) set((x) => { x.lowStock = n }, `Low stock reminder now below ${n}`); else e.target.value = s.lowStock }} /></label>
         </section>
 
         <section className="card set">

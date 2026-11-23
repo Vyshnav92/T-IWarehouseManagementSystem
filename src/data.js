@@ -35,6 +35,8 @@ export const hijriToday = () => {
 // ---------- numbers ----------
 export const fmtNum = (n) => (Math.round(n * 1000) / 1000).toLocaleString('en-US', { maximumFractionDigits: 3 })
 export const fmtSAR = (n) => 'SAR ' + Math.round(n).toLocaleString('en-US')
+export const fmt2 = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+export const round2 = (n) => Math.round(n * 100) / 100
 export const fmtSARk = (n) => n >= 1e6 ? `SAR ${(n / 1e6).toFixed(2)}M` : n >= 1e4 ? `SAR ${Math.round(n / 1000)}K` : fmtSAR(n)
 export const uid = (p = 'id') => p + Math.random().toString(36).slice(2, 9)
 
@@ -53,7 +55,8 @@ export const DEFAULT_SETTINGS = {
   managerName: 'Manager',
   remindDays: 10,
   depreciation: 15,
-  depRates: { handTools: 20, warehouseTools: 20, officeAssets: 20 },
+  depRates: { handTools: 20, officeAssets: 20 },
+  lowStock: 15, // a material below this is Running low
   periods: { fahas: 12, registration: 36, opCard: 24, driverCard: 12, license: 60 },
   smartChecks: true,
   showHowTo: true,
@@ -124,7 +127,24 @@ export function balances(db) {
   Object.keys(b).forEach((k) => { b[k] = Math.round(b[k] * 1000) / 1000 })
   return b
 }
-export const stockStatus = (bal, min) => (bal <= 0 ? 'out' : bal <= min ? 'low' : 'ok')
+export const lowLimit = (db) => db.settings.lowStock ?? 15
+export const stockStatus = (bal, limit) => (bal <= 0 ? 'out' : bal < limit ? 'low' : 'ok')
+/** Tools were moved out of the Warehouse (R4). Their items stay in db.materials so old entries still show them. */
+export const isTool = (m) => m.category === 'Tools'
+export const stockMaterials = (db) => db.materials.filter((m) => !isTool(m))
+/** Same name ignoring capitals, extra spaces and punctuation. */
+export const normName = (s) => String(s).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+/** Current unit cost: weighted average of the material's purchase prices. null when it was never bought with a price. */
+export function unitCost(db, materialId) {
+  let q = 0, v = 0
+  db.movements.forEach((mv) => { if (!mv.cancelled && mv.kind === 'purchase') mv.lines.forEach((l) => { if (l.materialId === materialId && l.unitPrice != null) { q += l.qty; v += l.qty * l.unitPrice } }) })
+  return q ? round2(v / q) : null
+}
+/** Value of a stock out from the unit cost saved on each line when it was made. Lines without a cost are counted in `missing`. */
+export function issueValue(mv) {
+  const priced = mv.lines.filter((l) => l.unitCost != null)
+  return { total: round2(priced.reduce((a, l) => a + round2(l.qty * l.unitCost), 0)), missing: mv.lines.length - priced.length }
+}
 export const STOCK_STATUS = { ok: { label: 'In stock', tone: 'ok' }, low: { label: 'Running low', tone: 'warn' }, out: { label: 'Out of stock', tone: 'bad' } }
 
 /** Average daily usage over the last `days` days, from stock-out entries. */
@@ -138,14 +158,17 @@ export function usageRate(db, materialId, days = 30) {
 }
 /** Smart forecast per material: days until it runs out and a suggested order quantity. */
 export function forecast(db, bal) {
-  return db.materials.map((m) => {
+  const limit = lowLimit(db)
+  return stockMaterials(db).map((m) => {
     const rate = usageRate(db, m.id)
     const b = bal[m.id]
     const runOut = rate > 0 ? Math.max(0, Math.floor(b / rate)) : null
-    const suggest = rate > 0 ? Math.max(0, Math.ceil(rate * 30 + m.min - b)) : Math.max(0, Math.ceil(m.min * 2 - b))
-    return { m, rate, bal: b, runOut, suggest, status: stockStatus(b, m.min) }
+    const suggest = rate > 0 ? Math.max(0, Math.ceil(rate * 30 + limit - b)) : Math.max(0, Math.ceil(limit * 2 - b))
+    return { m, rate, bal: b, runOut, suggest, status: stockStatus(b, limit) }
   })
 }
+/** Low stock reminders: one per material below the limit, worked out live so it clears once stock is back. */
+export const lowStock = (db) => forecast(db, balances(db)).filter((f) => f.status !== 'ok')
 export const projectsOf = (db) => db.projects
 export function nextNo(db, kind) {
   const n = db.movements.filter((m) => m.kind === kind).length + 1
@@ -161,32 +184,15 @@ export const TOOL_CONDITIONS = {
   lost: { label: 'Lost', tone: 'plain' },
   scrapped: { label: 'Scrapped', tone: 'plain' },
 }
-export const toolCondition = (m) => m.condition || 'good'
-
-/** Tools currently out at each site = tools sent out minus tools returned. */
-export function toolsAtSites(db) {
-  const tools = new Set(db.materials.filter((m) => m.category === 'Tools').map((m) => m.id))
-  const map = {}
-  db.movements.forEach((mv) => {
-    if (mv.cancelled || mv.kind === 'purchase' || !mv.project) return
-    mv.lines.forEach((l) => {
-      if (!tools.has(l.materialId)) return
-      map[mv.project] = map[mv.project] || {}
-      map[mv.project][l.materialId] = (map[mv.project][l.materialId] || 0) + (mv.kind === 'issue' ? l.qty : -l.qty)
-    })
-  })
-  return Object.entries(map).map(([project, t]) => ({ project, tools: Object.entries(t).filter(([, q]) => q > 0).map(([id, q]) => ({ id, q })) })).filter((r) => r.tools.length)
-}
 
 // ---------- depreciation (all asset types) ----------
 /** Asset types that have a depreciation rate in Settings. Vehicles keep their original setting (settings.depreciation). */
 export const DEP_TYPES = {
   vehicles: { label: 'Vehicles', sub: 'Cars and heavy vehicles' },
   handTools: { label: 'Hand tools', sub: 'Tools held by staff' },
-  warehouseTools: { label: 'Warehouse tools', sub: 'Tools on the Warehouse Tools page' },
   officeAssets: { label: 'Office assets', sub: 'Furniture, computers, equipment' },
 }
-export const DEFAULT_DEP_RATES = { handTools: 20, warehouseTools: 20, officeAssets: 20 }
+export const DEFAULT_DEP_RATES = { handTools: 20, officeAssets: 20 }
 export const rateOf = (s, type) => (type === 'vehicles' ? s.depreciation : (s.depRates?.[type] ?? DEFAULT_DEP_RATES[type]))
 const blank = (x) => x === undefined || x === null || x === ''
 /**
@@ -233,7 +239,6 @@ export const OFFICE_CATEGORIES = ['Furniture', 'Computer', 'Equipment', 'Phone',
 // ---------- total assets (one combined list, read live from each section) ----------
 export const ASSET_TYPES = {
   handTool: { label: 'Hand tool', plural: 'Hand tools', rate: 'handTools' },
-  warehouseTool: { label: 'Warehouse tool', plural: 'Warehouse tools', rate: 'warehouseTools' },
   officeAsset: { label: 'Office asset', plural: 'Office assets', rate: 'officeAssets' },
   vehicle: { label: 'Vehicle', plural: 'Vehicles', rate: 'vehicles' },
 }
@@ -242,9 +247,6 @@ const OUT_CONDITIONS = ['lost', 'scrapped', 'sold']
 export function assetRows(db, asOf = TODAY) {
   const s = db.settings
   const rows = []
-  const bal = balances(db)
-  const sites = toolsAtSites(db)
-  const atSites = (id) => sites.reduce((a, x) => a + (x.tools.find((t) => t.id === id)?.q || 0), 0)
   const add = (r) => {
     if (r.purchaseDate && r.purchaseDate > asOf) return // bought after the report date
     const v = depreciate(r.cost, r.purchaseDate, rateOf(s, ASSET_TYPES[r.type].rate), asOf)
@@ -256,12 +258,6 @@ export function assetRows(db, asOf = TODAY) {
     const inOffice = Number(t.qty || 0) - out
     const loc = [holders.length ? `With ${[...new Set(holders.map((h) => h.empName))].join(', ')}` : '', inOffice > 0 ? `${inOffice} in office` : ''].filter(Boolean).join(' · ')
     add({ key: 'ht' + t.id, type: 'handTool', assetId: t.toolId, name: t.name, category: t.category, location: loc || 'Office', place: holders.length ? 'With staff' : 'Office', qty: Number(t.qty || 0), condition: t.condition, conditionLabel: TOOL_CONDITIONS[t.condition]?.label || t.condition, purchaseDate: t.purchaseDate, cost: blank(t.unitValue) ? null : Number(t.unitValue) * Number(t.qty || 0), inactive: t.active === false, open: ['handTool', { id: t.id }] })
-  })
-  db.materials.filter((m) => m.category === 'Tools').forEach((m) => {
-    const site = atSites(m.id)
-    const qty = Math.max(0, (bal[m.id] || 0) + site)
-    const c = toolCondition(m)
-    add({ key: 'wt' + m.id, type: 'warehouseTool', assetId: m.code || m.id.toUpperCase(), name: m.name, category: 'Warehouse tools', location: site ? `Store ${fmtNum(bal[m.id] || 0)} · Sites ${fmtNum(site)}` : 'Warehouse store', place: 'Warehouse', qty, condition: c, conditionLabel: TOOL_CONDITIONS[c].label, purchaseDate: m.purchaseDate || null, cost: blank(m.unitValue) ? null : Number(m.unitValue) * qty, open: ['material', { id: m.id }] })
   })
   ;(db.officeAssets || []).forEach((o) => add({ key: 'oa' + o.id, type: 'officeAsset', assetId: o.assetId, name: o.name, category: o.category || 'Other', location: o.location || '—', place: (o.location || 'Office').split('·')[0].trim(), qty: 1, condition: o.condition, conditionLabel: TOOL_CONDITIONS[o.condition]?.label || o.condition || '—', purchaseDate: o.purchaseDate || null, cost: blank(o.purchaseValue) ? null : Number(o.purchaseValue), inactive: o.active === false, open: ['officeAssetForm', { id: o.id }] }))
   db.vehicles.forEach((v) => add({ key: 'v' + v.id, type: 'vehicle', assetId: v.plate, name: `${v.brand} ${v.model}`.trim(), category: v.type === 'heavy' ? 'Heavy vehicle' : 'Car', location: [v.location, v.user].filter(Boolean).join(' · ') || '—', place: v.location || '—', qty: 1, condition: v.condition, conditionLabel: CONDITIONS[v.condition]?.label || v.condition, purchaseDate: v.purchaseDate || null, cost: v.purchaseValue ? Number(v.purchaseValue) : null, open: ['vehicle', { id: v.id }] }))
@@ -304,11 +300,6 @@ export function sampleDB() {
   const r = rng(20261118)
   const pick = (a) => a[Math.floor(r() * a.length)]
   const materials = MATERIALS.map(([name, category, unit, opening, min], i) => ({ id: 'm' + (i + 1), name, category, unit, opening, min }))
-  // a few tools with a condition story for the demo
-  const setCond = (name, condition, log) => { const m = materials.find((x) => x.name === name); m.condition = condition; m.conditionLog = log }
-  setCond('Compressor Big', 'repair', [{ at: addDays(TODAY, -6) + 'T09:30:00', from: 'good', to: 'repair', note: 'Returned from Renault Hail, pressure valve leaking', by: 'Manager' }])
-  setCond('Trolley', 'fair', [{ at: addDays(TODAY, -15) + 'T14:10:00', from: 'good', to: 'fair', note: 'One wheel worn', by: 'Manager' }])
-  setCond('Aluminium Ladder', 'new', [])
   const bal = Object.fromEntries(materials.map((m) => [m.id, m.opening]))
   const movements = []
   const counters = { purchase: 0, return: 0, issue: 0 }
@@ -346,8 +337,25 @@ export function sampleDB() {
   ;[['Wagamama Riyadh', [['m31', 10], ['m32', 3], ['m33', 4]]], ['Renault Hail', [['m31', 8], ['m35', 1], ['m34', 2]]], ['Gymnation Faisaliya', [['m31', 6], ['m36', 2], ['m38', 4]]]].forEach(([project, ls], i) =>
     push({ kind: 'issue', date: addDays(TODAY, -20 + i * 5), reqNo: String(410 + i), reqName: 'Azeem', project, engineer: pick(ENGINEERS), mtn: String(1400 + i), lines: ls.map(([materialId, qty]) => ({ materialId, qty })), attachments: [], cancelled: false }))
   movements.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
-  // make a few items visibly low / out for the demo story
-  ;['m8', 'm22', 'm6', 'm27'].forEach((id) => { const m = materials.find((x) => x.id === id); m.min = Math.max(m.min, Math.ceil(bal[id] * 1.3) + 2) })
+  // a few materials low or out for the demo: lower the opening stock, but never so far that the history goes below zero
+  ;[['m8', 6], ['m22', 11], ['m25', 9], ['m6', 4], ['m27', 0]].forEach(([id, target]) => {
+    const m = materials.find((x) => x.id === id)
+    let run = m.opening, low = run
+    movements.forEach((mv) => { if (!mv.cancelled) mv.lines.forEach((l) => { if (l.materialId === id) { run += KINDS[mv.kind].sign * l.qty; low = Math.min(low, run) } }) })
+    m.opening -= Math.max(0, Math.min(run - target, low))
+  })
+  // prices: purchases get a price near each material's base price; each stock out keeps the weighted average cost at that date.
+  // Tools are left without a price, so old tool entries show "Price not set".
+  const pr = rng(4242)
+  const basePrice = Object.fromEntries(materials.map((m) => [m.id, round2(3 + pr() * 60)]))
+  const cost = {} // id -> { q, v }
+  movements.forEach((mv) => mv.lines.forEach((l) => {
+    const m = materials.find((x) => x.id === l.materialId)
+    if (isTool(m)) return
+    const c = (cost[l.materialId] ||= { q: m.opening, v: m.opening * basePrice[l.materialId] })
+    if (mv.kind === 'purchase') { l.unitPrice = round2(basePrice[l.materialId] * (0.9 + pr() * 0.2)); c.q += l.qty; c.v += l.qty * l.unitPrice }
+    if (mv.kind === 'issue') l.unitCost = round2(c.v / c.q)
+  }))
   const m35 = materials.find((x) => x.id === 'm35'); m35.opening -= bal.m35 // compressor: all units are out at sites → zero left
 
   const sample = (title, rows) => ({ sample: true, name: title.replace(/\s+/g, '_') + '.pdf', title, rows })
@@ -390,8 +398,6 @@ export function sampleDB() {
     D({ name: 'Joseph Thomas', licenseNo: '2501 4476 39', license: addMonths(TODAY, 36), driverCard: addMonths(TODAY, 7), profession: 'Light Driver', phone: '+966 58 245 6610' }),
   ]
 
-  // warehouse tools: purchase details for most of them (a few are left blank to show "Value missing")
-  ;[['m31', 180, 30], ['m32', 1400, 30], ['m33', 90, 30], ['m34', 650, 14], ['m35', 9500, 26], ['m37', 450, 8]].forEach(([id, unitValue, monthsAgo], i) => { const m = materials.find((x) => x.id === id); m.unitValue = unitValue; m.purchaseDate = addMonths(TODAY, -monthsAgo); m.code = 'WT-' + String(i + 1).padStart(4, '0') })
   const HT = (n, toolId, category, name, qty, monthsAgo, unitValue, condition) => ({ id: 'ht' + n, toolId, category, name, qty, purchaseDate: addMonths(TODAY, -monthsAgo), unitValue, condition, remarks: '', active: true, log: [] })
   const handTools = [
     HT(1, 'HT-0001', 'Power tools', 'Bosch cordless drill', 4, 14, 650, 'good'),

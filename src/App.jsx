@@ -4,7 +4,7 @@ import {
   Search, Bell, HelpCircle, MessageCircle, Package, ChevronRight, X, Menu, Wrench, Landmark,
 } from 'lucide-react'
 import { useApp } from './store'
-import { activeReminders, EXPIRY, relDays, hijriToday, TODAY, fmtDate } from './data'
+import { activeReminders, EXPIRY, relDays, hijriToday, TODAY, fmtDate, lowStock, lowLimit, fmtNum, stockMaterials } from './data'
 import { cx, Pill } from './ui'
 import logoDark from './logo_D.png'
 import Home from './pages/Home'
@@ -59,7 +59,7 @@ export default function App() {
 
 function Sidebar({ open, onClose }) {
   const { route, go, db, openAssistant, update } = useApp()
-  const rem = activeReminders(db).length
+  const rem = activeReminders(db).length + lowStock(db).length
   return (
     <>
       {open && <div className="side-scrim" onClick={onClose} />}
@@ -94,6 +94,8 @@ function Topbar({ onMenu }) {
   const [bell, setBell] = useState(false)
   const box = useRef()
   const rem = activeReminders(db)
+  const low = lowStock(db)
+  const count = rem.length + low.length
   useEffect(() => {
     const on = (e) => { if (box.current && !box.current.contains(e.target)) { setFocus(false); setBell(false) } }
     document.addEventListener('mousedown', on); return () => document.removeEventListener('mousedown', on)
@@ -102,7 +104,7 @@ function Topbar({ onMenu }) {
     const s = q.trim().toLowerCase()
     if (s.length < 2) return []
     const r = []
-    db.materials.filter((m) => m.name.toLowerCase().includes(s)).slice(0, 5).forEach((m) => r.push({ icon: Package, label: m.name, meta: 'Material · ' + m.category, open: { type: 'material', id: m.id } }))
+    stockMaterials(db).filter((m) => m.name.toLowerCase().includes(s)).slice(0, 5).forEach((m) => r.push({ icon: Package, label: m.name, meta: 'Material · ' + m.category, open: { type: 'material', id: m.id } }))
     db.vehicles.filter((v) => (v.plate + ' ' + v.brand + ' ' + v.model + ' ' + v.user).toLowerCase().includes(s)).slice(0, 4).forEach((v) => r.push({ icon: Truck, label: v.plate, meta: `${v.brand} ${v.model} · ${v.user}`, open: { type: 'vehicle', id: v.id } }))
     db.drivers.filter((d) => d.name.toLowerCase().includes(s)).slice(0, 4).forEach((d) => r.push({ icon: Users, label: d.name, meta: 'Driver · ' + d.profession, open: { type: 'driver', id: d.id } }))
     return r
@@ -133,8 +135,8 @@ function Topbar({ onMenu }) {
         <b>{today.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}</b>
         <small>{hijriToday()}</small>
       </div>
-      <button className="iconbtn bell" onClick={() => setBell(!bell)} aria-label={`${rem.length} reminders`}>
-        <Bell size={21} />{rem.length > 0 && <em>{rem.length}</em>}
+      <button className="iconbtn bell" onClick={() => setBell(!bell)} aria-label={`${count} reminders`}>
+        <Bell size={21} />{count > 0 && <em>{count}</em>}
       </button>
       {bell && (
         <div className="pop bell-pop">
@@ -143,6 +145,12 @@ function Topbar({ onMenu }) {
             <button key={r.id} className="pop-row" onClick={() => { open(r.entity, { id: r.entityId }); setBell(false) }}>
               <span className={cx('dotlg', r.days < 0 ? 'bad' : 'warn')} />
               <span className="grow"><b>{r.title} · {EXPIRY[r.key].short}</b><small>{r.days < 0 ? `Expired ${-r.days} days ago` : `Expires ${relDays(r.days)}`} · {fmtDate(r.date)}</small></span>
+            </button>
+          ))}
+          {low.slice(0, 4).map((f) => (
+            <button key={f.m.id} className="pop-row" onClick={() => { open('material', { id: f.m.id }); setBell(false) }}>
+              <span className={cx('dotlg', f.status === 'out' ? 'bad' : 'warn')} />
+              <span className="grow"><b>{f.m.name}: {fmtNum(f.bal)} left</b><small>{f.status === 'out' ? 'Out of stock' : `Below ${lowLimit(db)}`} · Warehouse</small></span>
             </button>
           ))}
           <button className="pop-all" onClick={() => { go('reminders'); setBell(false) }}>See all reminders <ChevronRight size={15} /></button>

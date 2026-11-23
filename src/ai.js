@@ -7,7 +7,7 @@
                    send the photo to a vision model such as Claude).
 ------------------------------------------------------------------- */
 import {
-  allExpiries, activeReminders, balances, forecast, currentValue, maintSpend, toolsAtSites, usageRate,
+  allExpiries, activeReminders, balances, forecast, currentValue, maintSpend, usageRate, stockMaterials,
   EXPIRY, fmtDate, fmtNum, fmtSAR, relDays, addMonths, TODAY, daysUntil, CONDITIONS, KINDS,
 } from './data'
 
@@ -67,7 +67,7 @@ export function parseEntry(text, db) {
     let name = m[2].split(/\b(?:to|for|from|by|at|engineer|eng|site)\b/)[0].trim()
     name = name.replace(/^(?:nos|pcs|pieces|rolls?|bags?|boxes?|units?|sqm|meters?|kg)\s+(?:of\s+)?/, '')
     if (!name) return
-    const mat = bestMatch(name, db.materials, (x) => x.name)
+    const mat = bestMatch(name, stockMaterials(db), (x) => x.name)
     if (mat && qty > 0) { const ex = lines.find((l) => l.materialId === mat.id); if (ex) ex.qty += qty; else lines.push({ materialId: mat.id, qty }) }
     else unknown.push(seg.trim())
   })
@@ -189,15 +189,6 @@ export function answer(q, db) {
     }
   }
 
-  // 4) Where are tools
-  if (/\b(where|which site|tools?|scaffold)/.test(t)) {
-    const sites = toolsAtSites(db)
-    const mat = bestMatch(q, db.materials.filter((m) => m.category === 'Tools'), (m) => m.name, 0.3)
-    const rows = []
-    sites.forEach((s) => s.tools.forEach((x) => { if (!mat || x.id === mat.id) { const m = db.materials.find((y) => y.id === x.id); rows.push({ label: `${fmtNum(x.q)} × ${m.name}`, meta: s.project }) } }))
-    if (rows.length) return { text: mat ? `**${mat.name}**: ${fmtNum(bal[mat.id])} in the warehouse. These are out at sites:` : 'Tools currently out at sites:', list: rows, actions: [{ label: 'See tools at sites', go: 'warehouse/tools' }] }
-  }
-
   // 5) Maintenance spend
   if (/maint|repair|service|spent|spend|cost|workshop/.test(t)) {
     const total = fleet.reduce((a, f) => a + f.spend, 0)
@@ -252,7 +243,7 @@ export function answer(q, db) {
   }
 
   // 10) A material's stock
-  const mat = bestMatch(q, db.materials, (m) => m.name)
+  const mat = bestMatch(q, stockMaterials(db), (m) => m.name)
   if (mat) {
     const rate = usageRate(db, mat.id)
     const last = [...db.movements].reverse().find((mv) => !mv.cancelled && mv.lines.some((l) => l.materialId === mat.id))
@@ -280,7 +271,7 @@ export function simulateReadExpiry(currentIso, periodMonths) {
 /** Demo stand-in for reading a supplier bill into purchase lines. */
 export function simulateReadBill(db) {
   const vendor = db.vendors[Math.floor(Math.random() * db.vendors.length)]
-  const pool = db.materials.filter((m) => m.category !== 'Tools')
+  const pool = stockMaterials(db)
   const lines = []
   while (lines.length < 3) { const m = pool[Math.floor(Math.random() * pool.length)]; if (!lines.some((l) => l.materialId === m.id)) lines.push({ materialId: m.id, qty: Math.max(5, Math.round(m.opening * 0.25)) }) }
   return { vendor, billNo: 'INV-' + (48000 + Math.floor(Math.random() * 900)), lines }

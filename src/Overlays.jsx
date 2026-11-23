@@ -6,7 +6,7 @@ import {
 import { useApp } from './store'
 import {
   KINDS, balances, nextNo, TODAY, fmtDate, fmtNum, fmtSAR, uid, EXPIRY, addMonths, daysUntil, currentValue, maintSpend,
-  CONDITIONS, OWNERSHIP, VEHICLE_DOCS, DRIVER_DOCS, vehicleExpiryKeys, DRIVER_EXPIRY_KEYS, STOCK_STATUS, stockStatus, usageRate, TOOL_CONDITIONS, toolCondition,
+  CONDITIONS, OWNERSHIP, VEHICLE_DOCS, DRIVER_DOCS, vehicleExpiryKeys, DRIVER_EXPIRY_KEYS, STOCK_STATUS, stockStatus, usageRate, lowLimit, isTool, stockMaterials, normName, unitCost, round2, fmt2,
 } from './data'
 import { parseEntry, typicalIssue, simulateReadExpiry, simulateReadBill } from './ai'
 import { Modal, Drawer, Btn, Pill, Field, FileSlot, ExpiryPill, AiTag, Empty, DocViewer, cx, fileUrl, downloadRef } from './ui'
@@ -23,7 +23,7 @@ export default function Overlays() {
 }
 
 // ======================= stock entry (in / out) =======================
-const blankLine = () => ({ key: uid('l'), materialId: '', qty: '' })
+const blankLine = () => ({ key: uid('l'), materialId: '', qty: '', price: '', newName: '', unit: 'NOS', category: '' })
 
 function EntryForm({ kind: k0 = 'issue', prefill, onClose }) {
   const { db, update, toast, saveFile } = useApp()
@@ -33,7 +33,7 @@ function EntryForm({ kind: k0 = 'issue', prefill, onClose }) {
     date: TODAY, reqNo: prefill?.reqNo || '', reqName: prefill?.reqName || '', vendor: prefill?.vendor || '', billNo: prefill?.billNo || '',
     project: prefill?.project || '', engineer: prefill?.engineer || '', mtn: prefill?.mtn || '', note: '',
   }))
-  const [lines, setLines] = useState(() => (prefill?.lines?.length ? prefill.lines.map((l) => ({ ...l, key: uid('l') })) : [blankLine()]))
+  const [lines, setLines] = useState(() => (prefill?.lines?.length ? prefill.lines.map((l) => ({ ...blankLine(), ...l })) : [blankLine()]))
   const [files, setFiles] = useState([])
   const [sentence, setSentence] = useState('')
   const [scanning, setScanning] = useState(false)
@@ -46,7 +46,7 @@ function EntryForm({ kind: k0 = 'issue', prefill, onClose }) {
   const quick = useMemo(() => {
     const c = {}
     db.movements.forEach((mv) => { if (mv.kind === kind && !mv.cancelled) mv.lines.forEach((l) => { c[l.materialId] = (c[l.materialId] || 0) + 1 }) })
-    return Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([id]) => db.materials.find((m) => m.id === id)).filter(Boolean)
+    return Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([id]) => db.materials.find((m) => m.id === id)).filter((m) => m && !isTool(m))
   }, [db, kind])
 
   const addMaterial = (id) => setLines((ls) => {
@@ -60,7 +60,7 @@ function EntryForm({ kind: k0 = 'issue', prefill, onClose }) {
     if (!p.lines.length) { toast("I couldn't find any materials in that sentence. Try “20 cement bags to Wagamama”.", 'warn'); return }
     setKind(p.kind)
     setF((x) => ({ ...x, reqNo: p.reqNo || x.reqNo, reqName: p.reqName || x.reqName, project: p.project || x.project, engineer: p.engineer || x.engineer, vendor: p.vendor || x.vendor, mtn: p.mtn || x.mtn, billNo: p.billNo || x.billNo }))
-    setLines(p.lines.map((l) => ({ ...l, key: uid('l') })))
+    setLines(p.lines.map((l) => ({ ...blankLine(), ...l })))
     toast(`Filled ${p.lines.length} line${p.lines.length > 1 ? 's' : ''} from your sentence. Check them, then save.`)
   }
   const scanBill = async (file) => {
@@ -70,19 +70,32 @@ function EntryForm({ kind: k0 = 'issue', prefill, onClose }) {
     setTimeout(() => {
       const r = simulateReadBill(db)
       setF((x) => ({ ...x, vendor: x.vendor || r.vendor, billNo: x.billNo || r.billNo }))
-      setLines(r.lines.map((l) => ({ ...l, key: uid('l') })))
+      setLines(r.lines.map((l) => ({ ...blankLine(), ...l })))
       setScanning(false)
       toast('Bill read: supplier, bill number and 3 lines filled in. Please check them.')
     }, 1800)
   }
 
-  const valid = lines.filter((l) => l.materialId && Number(l.qty) > 0)
+  const limit = lowLimit(db)
+  const mats = stockMaterials(db)
+  const cats = [...new Set(mats.map((m) => m.category))]
+  const units = [...new Set(['NOS', ...db.materials.map((m) => m.unit)])]
+  // typing a name: an existing material (any capitals or spacing) is picked, anything else becomes a new material (purchases only)
+  const pickByName = (key, v) => { const hit = mats.find((x) => normName(x.name) === normName(v)); setLine(key, hit ? { materialId: hit.id, newName: '' } : { materialId: '', newName: v }) }
+  const similarTo = (v) => { const n = normName(v); return n.length < 3 ? null : mats.find((x) => { const m = normName(x.name); return m.includes(n) || n.includes(m) }) }
+  const isNew = (l) => kind === 'purchase' && !l.materialId && l.newName.trim()
+  const valid = lines.filter((l) => (l.materialId || isNew(l)) && Number(l.qty) > 0)
+  const lineValue = (l) => (l.price === '' || l.qty === '' ? null : round2(Number(l.qty) * Number(l.price)))
+  const buyTotal = round2(valid.reduce((a, l) => a + (lineValue(l) || 0), 0))
   const problems = valid.map((l) => {
     const m = db.materials.find((x) => x.id === l.materialId)
+    if (!m) return null
     const q = Number(l.qty)
     if (kind === 'issue' && q > bal[l.materialId]) return { key: l.key, tone: 'bad', text: `Only ${fmtNum(bal[l.materialId])} ${m.unit} in stock. You can't send more than that.` }
     const typ = db.settings.smartChecks && kind === 'issue' ? typicalIssue(db, l.materialId) : null
     if (typ && q > typ * 3) return { key: l.key, tone: 'warn', text: `Unusual amount: you normally send about ${fmtNum(Math.round(typ))} at a time. Please double-check.`, ai: true }
+    const after = bal[l.materialId] - q
+    if (kind === 'issue' && after < limit) return { key: l.key, tone: 'warn', text: `After this, ${m.name} will have ${fmtNum(after)} ${m.unit} left (below ${limit}).` }
     return null
   }).filter(Boolean)
   const blocking = problems.some((p) => p.tone === 'bad')
@@ -92,15 +105,33 @@ function EntryForm({ kind: k0 = 'issue', prefill, onClose }) {
     if (kind === 'purchase' && !f.vendor.trim()) return setErr('Who did you buy from? Enter the supplier.')
     if (kind !== 'purchase' && !f.project.trim()) return setErr('Which project or site? Enter the project name.')
     if (blocking) return setErr('Fix the red line first: there is not enough stock.')
+    if (kind === 'purchase' && valid.some((l) => l.price === '' || !(Number(l.price) >= 0))) return setErr('Enter the unit price (SAR) for every material.')
+    const created = {} // normalised name -> new material, so the same name on two rows is created once
+    for (const l of valid.filter(isNew)) {
+      const name = l.newName.trim().replace(/\s+/g, ' ')
+      if (name.length < 2 || name.length > 120) return setErr('A new material name must be 2 to 120 characters.')
+      const dup = db.materials.find((x) => normName(x.name) === normName(name))
+      if (dup) return setErr(`“${dup.name}” is a tool. Tools are managed in Hand tools, not the Warehouse.`)
+      if (!l.category) return setErr(`Choose a category for the new material “${name}”.`)
+      created[normName(name)] ||= { id: uid('m'), name, category: l.category, unit: l.unit || 'NOS', opening: 0, min: 0, createdAt: new Date().toISOString(), createdBy: db.settings.managerName || 'Manager' }
+    }
+    const newMats = Object.values(created)
     const no = nextNo(db, kind)
-    const mv = { id: uid('mv'), no, kind, ...f, lines: valid.map((l) => ({ materialId: l.materialId, qty: Number(l.qty) })), attachments: files, cancelled: false, createdAt: new Date().toISOString() }
+    const mv = {
+      id: uid('mv'), no, kind, ...f, attachments: files, cancelled: false, createdAt: new Date().toISOString(),
+      lines: valid.map((l) => {
+        const materialId = l.materialId || created[normName(l.newName)].id, qty = Number(l.qty)
+        return kind === 'purchase' ? { materialId, qty, unitPrice: round2(Number(l.price)) } : kind === 'issue' ? { materialId, qty, unitCost: unitCost(db, materialId) } : { materialId, qty }
+      }),
+    }
     update((d) => {
+      d.materials.push(...newMats)
       d.movements.push(mv)
       if (f.project && !d.projects.includes(f.project)) d.projects.push(f.project)
       if (f.vendor && !d.vendors.includes(f.vendor)) d.vendors.push(f.vendor)
       if (f.engineer && !d.engineers.includes(f.engineer)) d.engineers.push(f.engineer)
-    }, `${K.label} ${no} saved, ${valid.length} material${valid.length > 1 ? 's' : ''}${f.project ? ' · ' + f.project : f.vendor ? ' · ' + f.vendor : ''}`, kind)
-    toast(`${no} saved. Stock ${K.group === 'in' ? 'increased' : 'reduced'} for ${valid.length} material${valid.length > 1 ? 's' : ''}.`, 'ok',
+    }, `${K.label} ${no} saved, ${valid.length} material${valid.length > 1 ? 's' : ''}${f.project ? ' · ' + f.project : f.vendor ? ' · ' + f.vendor : ''}${newMats.length ? ` · new: ${newMats.map((m) => m.name).join(', ')}` : ''}`, kind)
+    toast(`${no} saved. Stock ${K.group === 'in' ? 'increased' : 'reduced'} for ${valid.length} material${valid.length > 1 ? 's' : ''}.${newMats.length ? ` ${newMats.length} new material${newMats.length > 1 ? 's' : ''} added.` : ''}`, 'ok',
       kind === 'issue' ? { label: 'Download voucher', run: () => downloadVoucher(mv, db, toast) } : undefined)
     onClose()
   }
@@ -154,7 +185,7 @@ function EntryForm({ kind: k0 = 'issue', prefill, onClose }) {
       <datalist id="dl-projects">{db.projects.map((v) => <option key={v} value={v} />)}</datalist>
       <datalist id="dl-eng">{db.engineers.map((v) => <option key={v} value={v} />)}</datalist>
 
-      <div className="lines-h"><b>Materials</b><span className="muted small">Pick from the list. The unit and current stock show up on their own.</span></div>
+      <div className="lines-h"><b>Materials</b><span className="muted small">{kind === 'purchase' ? 'Type or pick a material. A name that is not in the list is added as a new material when you save.' : 'Pick from the list. The unit and current stock show up on their own.'}</span></div>
       {quick.length > 0 && (
         <div className="quick"><span className="muted small"><Sparkles size={13} /> You use these most:</span>{quick.map((m) => <button key={m.id} className="chip" onClick={() => addMaterial(m.id)}><Plus size={13} />{m.name}</button>)}</div>
       )}
@@ -164,22 +195,36 @@ function EntryForm({ kind: k0 = 'issue', prefill, onClose }) {
           const b = m ? bal[m.id] : null
           const after = m && l.qty !== '' ? b + K.sign * Number(l.qty) : null
           const p = problems.find((x) => x.key === l.key)
+          const similar = isNew(l) ? similarTo(l.newName) : null
+          const v = lineValue(l)
           return (
-            <div key={l.key} className={cx('line', p && 'has-' + p.tone)}>
-              <select value={l.materialId} onChange={(e) => setLine(l.key, { materialId: e.target.value })}>
-                <option value="">Choose material…</option>
-                {[...new Set(db.materials.map((x) => x.category))].map((c) => (
-                  <optgroup key={c} label={c}>{db.materials.filter((x) => x.category === c).map((x) => <option key={x.id} value={x.id} disabled={x.id !== l.materialId && lines.some((y) => y.materialId === x.id)}>{x.name}</option>)}</optgroup>
-                ))}
-              </select>
-              <div className="qty"><input type="number" min="0" step="any" inputMode="decimal" value={l.qty} onChange={(e) => setLine(l.key, { qty: e.target.value })} placeholder="Qty" /><span>{m?.unit || ''}</span></div>
-              <div className="line-info">{m ? <>In stock <b>{fmtNum(b)}</b>{after !== null && <> → <b className={after < 0 ? 'bad' : ''}>{fmtNum(after)}</b></>}</> : <span className="muted">—</span>}</div>
+            <div key={l.key} className={cx('line', kind === 'purchase' && 'buy', p && 'has-' + p.tone)}>
+              {kind === 'purchase' ? <input list="dl-mats" value={m ? m.name : l.newName} onChange={(e) => pickByName(l.key, e.target.value)} placeholder="Type or choose a material…" aria-label="Material" />
+                : <select value={l.materialId} onChange={(e) => setLine(l.key, { materialId: e.target.value })}>
+                  <option value="">Choose material…</option>
+                  {cats.map((c) => (
+                    <optgroup key={c} label={c}>{mats.filter((x) => x.category === c).map((x) => <option key={x.id} value={x.id} disabled={x.id !== l.materialId && lines.some((y) => y.materialId === x.id)}>{x.name}</option>)}</optgroup>
+                  ))}
+                </select>}
+              <div className="qty"><input type="number" min="0" step="any" inputMode="decimal" value={l.qty} onChange={(e) => setLine(l.key, { qty: e.target.value })} placeholder="Qty" /><span>{m?.unit || (isNew(l) ? l.unit : '')}</span></div>
+              {kind === 'purchase' && <div className="qty"><input type="number" min="0" step="0.01" inputMode="decimal" value={l.price} onChange={(e) => setLine(l.key, { price: e.target.value })} placeholder="Unit price" aria-label="Unit price in SAR" aria-invalid={l.price === '' && Number(l.qty) > 0} /><span>SAR</span></div>}
+              <div className="line-info">{m ? <>In stock <b>{fmtNum(b)}</b>{after !== null && <> → <b className={after < 0 ? 'bad' : ''}>{fmtNum(after)}</b></>}</> : isNew(l) ? <Pill tone="info">New material</Pill> : <span className="muted">—</span>}{kind === 'purchase' && v !== null && <small className="block">Value <b>SAR {fmt2(v)}</b></small>}</div>
               <button className="iconbtn sm" onClick={() => setLines((ls) => (ls.length > 1 ? ls.filter((x) => x.key !== l.key) : [blankLine()]))} aria-label="Remove line"><Trash2 size={16} /></button>
               {p && <div className={cx('line-note', p.tone)}>{p.ai ? <Sparkles size={14} /> : <AlertTriangle size={14} />}{p.text}</div>}
+              {isNew(l) && (
+                <div className="line-new">
+                  {similar && <span className="warnc">Did you mean <button type="button" className="linkish" onClick={() => setLine(l.key, { materialId: similar.id, newName: '' })}>{similar.name}</button>?</span>}
+                  <span>New material “<b>{l.newName.trim()}</b>”:</span>
+                  <select value={l.unit} onChange={(e) => setLine(l.key, { unit: e.target.value })} aria-label="Unit">{units.map((u) => <option key={u}>{u}</option>)}</select>
+                  <select value={l.category} onChange={(e) => setLine(l.key, { category: e.target.value })} aria-label="Category" aria-invalid={!l.category}><option value="">Category…</option>{cats.map((c) => <option key={c}>{c}</option>)}</select>
+                </div>
+              )}
             </div>
           )
         })}
       </div>
+      <datalist id="dl-mats">{mats.map((x) => <option key={x.id} value={x.name} />)}</datalist>
+      {kind === 'purchase' && valid.length > 0 && <div className="buy-total">Total <b>SAR {fmt2(buyTotal)}</b></div>}
       <Btn kind="soft" size="sm" icon={Plus} onClick={() => setLines((ls) => [...ls, blankLine()])}>Add another material</Btn>
       <Field label="Note (optional)"><input value={f.note} onChange={(e) => set('note', e.target.value)} placeholder="Anything to remember about this entry" /></Field>
       {files.length > 0 && <div className="attached">{files.map((x) => <Pill key={x.id} tone="info"><FileText size={12} /> {x.name}</Pill>)}</div>}
@@ -234,7 +279,7 @@ function MaterialDrawer({ id, onClose }) {
   const m = db.materials.find((x) => x.id === id)
   const bal = useMemo(() => balances(db), [db])
   if (!m) return null
-  const st = stockStatus(bal[m.id], m.min)
+  const st = stockStatus(bal[m.id], lowLimit(db))
   const rate = usageRate(db, m.id)
   let run = m.opening
   const ledger = db.movements.filter((mv) => mv.lines.some((l) => l.materialId === id)).map((mv) => {
@@ -248,11 +293,6 @@ function MaterialDrawer({ id, onClose }) {
         <div><span>In stock now</span><b>{fmtNum(bal[m.id])}<small> {m.unit}</small></b></div>
         <div><span>Used per week</span><b>{fmtNum(Math.round(rate * 7 * 10) / 10)}</b></div>
         <div><span>Lasts about</span><b>{rate > 0 ? `${Math.floor(bal[m.id] / rate)} days` : '—'}</b></div>
-      </div>
-      <div className="minrow">
-        <div className="grow"><b>Warn me when stock falls to</b><span className="muted small">You'll see “Running low” and it goes on the order list.</span></div>
-        <input type="number" min="0" defaultValue={m.min} onBlur={(e) => { const v = Math.max(0, Number(e.target.value) || 0); if (v !== m.min) { update((d) => { d.materials.find((x) => x.id === id).min = v }, `Minimum for ${m.name} set to ${v}`); toast('Minimum level saved') } }} />
-        <span className="muted">{m.unit}</span>
       </div>
       <h4 className="sec">History <span className="muted small">every movement, newest first</span></h4>
       <table className="tbl"><thead><tr><th>Date</th><th>Entry</th><th className="r">In / out</th><th className="r">Balance</th></tr></thead>
@@ -273,13 +313,14 @@ function MaterialDrawer({ id, onClose }) {
 
 function MaterialForm({ onClose }) {
   const { db, update, toast } = useApp()
-  const cats = [...new Set(db.materials.map((m) => m.category))]
-  const [f, setF] = useState({ name: '', category: cats[0], unit: 'NOS', opening: '', min: '' })
+  const cats = [...new Set(stockMaterials(db).map((m) => m.category))]
+  const [f, setF] = useState({ name: '', category: cats[0], unit: 'NOS', opening: '' })
   const [err, setErr] = useState('')
   const save = () => {
     if (!f.name.trim()) return setErr('Enter the material name.')
-    if (db.materials.some((m) => m.name.toLowerCase() === f.name.trim().toLowerCase())) return setErr('That material already exists.')
-    update((d) => { d.materials.push({ id: uid('m'), name: f.name.trim(), category: f.category || 'General', unit: f.unit, opening: Number(f.opening) || 0, min: Number(f.min) || 0 }) }, `New material added: ${f.name.trim()}`, 'add')
+    if (db.materials.some((m) => normName(m.name) === normName(f.name))) return setErr('That material already exists.')
+    if (normName(f.category) === 'tools') return setErr('Tools are managed in Hand tools, not the Warehouse.')
+    update((d) => { d.materials.push({ id: uid('m'), name: f.name.trim(), category: f.category || 'General', unit: f.unit, opening: Number(f.opening) || 0, min: 0 }) }, `New material added: ${f.name.trim()}`, 'add')
     toast('Material added'); onClose()
   }
   return (
@@ -290,43 +331,9 @@ function MaterialForm({ onClose }) {
         <Field label="Category"><input list="dl-cats" value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })} /></Field>
         <Field label="Unit"><select value={f.unit} onChange={(e) => setF({ ...f, unit: e.target.value })}>{['NOS', 'ROLL', 'BAG', 'BOX', 'SQM', 'M', 'KG', 'LTR', 'SET'].map((u) => <option key={u}>{u}</option>)}</select></Field>
         <Field label="Stock you have now"><input type="number" min="0" value={f.opening} onChange={(e) => setF({ ...f, opening: e.target.value })} placeholder="0" /></Field>
-        <Field label="Warn me below" hint="Minimum level"><input type="number" min="0" value={f.min} onChange={(e) => setF({ ...f, min: e.target.value })} placeholder="0" /></Field>
       </div>
       <datalist id="dl-cats">{cats.map((c) => <option key={c} value={c} />)}</datalist>
       {err && <div className="formerr"><AlertTriangle size={16} />{err}</div>}
-    </Modal>
-  )
-}
-
-/** Add a tool with just a name. It starts at quantity 0 and condition Good; stock is added later with Stock in. */
-function ToolForm({ from, onClose }) {
-  const { db, update, toast } = useApp()
-  const { cancel, done } = useFromAssets(from, onClose)
-  const [name, setName] = useState('')
-  const [purchaseDate, setPurchaseDate] = useState('')
-  const [unitValue, setUnitValue] = useState('')
-  const [err, setErr] = useState('')
-  const norm = (s) => s.trim().replace(/\s+/g, ' ').toLowerCase()
-  const save = () => {
-    const n = name.trim().replace(/\s+/g, ' ')
-    if (!n) return setErr('Enter the tool name.')
-    const dup = db.materials.find((m) => norm(m.name) === norm(n))
-    if (dup) return setErr(`“${dup.name}” is already in the list.`)
-    if (unitValue !== '' && (isNaN(Number(unitValue)) || Number(unitValue) < 0)) return setErr('The value per unit must be 0 or more, or left empty.')
-    if (purchaseDate && purchaseDate > TODAY) return setErr('The date of purchase cannot be in the future.')
-    update((d) => { d.materials.push({ id: uid('m'), name: n, category: 'Tools', unit: 'NOS', opening: 0, min: 0, condition: 'good', conditionLog: [], purchaseDate: purchaseDate || null, unitValue: unitValue === '' ? null : Number(unitValue) }) }, `New tool added: ${n}`, 'add')
-    toast('Tool added'); done(`${n} added`)
-  }
-  return (
-    <Modal title="Add a tool" sub="Just the name is enough. Add the quantity later with Stock in." icon={Wrench} onClose={cancel} width={520}
-      footer={<><Btn kind="ghost" onClick={cancel}>Cancel</Btn><Btn icon={Plus} onClick={save}>Add tool</Btn></>}>
-      <form className="fgrid" onSubmit={(e) => { e.preventDefault(); save() }}>
-        <Field label="Tool name" span={2}><input value={name} onChange={(e) => { setName(e.target.value); setErr('') }} placeholder="e.g. Angle Grinder" autoFocus aria-invalid={!!err} /></Field>
-        <Field label="Date of purchase (optional)"><input type="date" max={TODAY} value={purchaseDate} onChange={(e) => { setPurchaseDate(e.target.value); setErr('') }} /></Field>
-        <Field label="Value per unit, SAR (optional)" hint="Used for its value in Total assets"><input type="number" min="0" step="0.01" value={unitValue} onChange={(e) => { setUnitValue(e.target.value); setErr('') }} placeholder="0" /></Field>
-      </form>
-      {err && <div className="formerr"><AlertTriangle size={16} />{err}</div>}
-      <p className="muted small">It starts with quantity 0 and condition Good.</p>
     </Modal>
   )
 }
@@ -413,43 +420,6 @@ function RenewModal({ entity, id, expKey, onClose }) {
         </label>
       )}
       <p className="muted small">Until the new date is saved, you get a reminder every day.</p>
-    </Modal>
-  )
-}
-
-// ======================= tool condition =======================
-function ToolConditionModal({ id, onClose }) {
-  const { db, update, toast } = useApp()
-  const m = db.materials.find((x) => x.id === id)
-  const [cond, setCond] = useState(() => (m ? toolCondition(m) : 'good'))
-  const [note, setNote] = useState('')
-  if (!m) return null
-  const was = toolCondition(m)
-  const log = [...(m.conditionLog || [])].reverse()
-  const save = () => {
-    if (cond === was && !note.trim()) return onClose()
-    const entry = { at: new Date().toISOString(), from: was, to: cond, note: note.trim(), by: db.settings.managerName || 'Manager' }
-    update((d) => { const x = d.materials.find((y) => y.id === id); x.condition = cond; x.conditionLog = [...(x.conditionLog || []), entry] },
-      `${m.name}: condition ${cond === was ? 'note added' : `changed to ${TOOL_CONDITIONS[cond].label}`}`)
-    toast(cond === was ? 'Note saved' : `${m.name} is now marked ${TOOL_CONDITIONS[cond].label}`); onClose()
-  }
-  return (
-    <Modal title="Tool condition" sub={m.name} icon={Wrench} onClose={onClose} width={600}
-      footer={<><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn icon={CheckCircle2} onClick={save}>Save</Btn></>}>
-      <div className="seg">
-        {Object.entries(TOOL_CONDITIONS).map(([k, c]) => <button key={k} type="button" className={cx('segb', cond === k && 'on', 'tone-' + c.tone)} onClick={() => setCond(k)}>{c.label}</button>)}
-      </div>
-      <Field label="Note (optional)"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Handle cracked, sent for repair" /></Field>
-      <h4 className="sec">History</h4>
-      {log.length === 0 ? <p className="muted small">No changes yet. This tool has been {TOOL_CONDITIONS[was].label} since it was added.</p> : (
-        <ul className="condlog">{log.map((e, i) => (
-          <li key={i}>
-            <div className="row"><span className="muted small num">{new Date(e.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span><span className="grow" /><span className="muted small">{e.by}</span></div>
-            <div className="row"><Pill tone={TOOL_CONDITIONS[e.from].tone}>{TOOL_CONDITIONS[e.from].label}</Pill>→<Pill tone={TOOL_CONDITIONS[e.to].tone}>{TOOL_CONDITIONS[e.to].label}</Pill></div>
-            {e.note && <span>{e.note}</span>}
-          </li>
-        ))}</ul>
-      )}
     </Modal>
   )
 }
@@ -807,7 +777,7 @@ function DriverForm({ id, onClose }) {
 
 const MAP = {
   entry: EntryForm, movement: MovementDrawer, material: MaterialDrawer, materialForm: MaterialForm,
-  vehicle: VehicleDrawer, vehicleForm: VehicleForm, maint: MaintForm, renew: RenewModal, readDoc: ReadDocModal, toolCondition: ToolConditionModal, toolForm: ToolForm,
+  vehicle: VehicleDrawer, vehicleForm: VehicleForm, maint: MaintForm, renew: RenewModal, readDoc: ReadDocModal,
   ...ASSET_OVERLAYS,
   driver: DriverDrawer, driverForm: DriverForm, doc: (p) => <DocViewer fileRef={p.fileRef} title={p.title} onClose={p.onClose} />,
 }
