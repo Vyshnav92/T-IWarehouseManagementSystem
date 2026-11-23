@@ -1,12 +1,12 @@
 import { useMemo, useState, useEffect, useRef } from 'react'
 import {
   PackagePlus, PackageMinus, Undo2, Plus, Trash2, Sparkles, AlertTriangle, ScanLine, CheckCircle2, Wand2, CalendarCheck, Wrench,
-  Truck, Users, Pencil, MapPin, User, Gauge, Phone, Ban, Package, FileText, Lightbulb, ShieldCheck, Eye, Download, Upload,
+  Truck, Users, Pencil, MapPin, User, Gauge, Phone, Ban, Package, FileText, Lightbulb, ShieldCheck, Eye, Download, Upload, Printer,
 } from 'lucide-react'
 import { useApp } from './store'
 import {
   KINDS, balances, nextNo, TODAY, fmtDate, fmtNum, fmtSAR, uid, EXPIRY, addMonths, daysUntil, currentValue, maintSpend,
-  CONDITIONS, OWNERSHIP, VEHICLE_DOCS, DRIVER_DOCS, vehicleExpiryKeys, DRIVER_EXPIRY_KEYS, STOCK_STATUS, stockStatus, usageRate, lowLimit, isTool, stockMaterials, normName, unitCost, round2, fmt2,
+  CONDITIONS, OWNERSHIP, VEHICLE_DOCS, DRIVER_DOCS, vehicleExpiryKeys, DRIVER_EXPIRY_KEYS, STOCK_STATUS, stockStatus, usageRate, lowLimit, isTool, stockMaterials, normName, unitCost, returnCost, round2, fmt2,
 } from './data'
 import { parseEntry, typicalIssue, simulateReadExpiry, simulateReadBill } from './ai'
 import { Modal, Drawer, Btn, Pill, Field, FileSlot, ExpiryPill, AiTag, Empty, DocViewer, cx, fileUrl, downloadRef } from './ui'
@@ -25,15 +25,20 @@ export default function Overlays() {
 // ======================= stock entry (in / out) =======================
 const blankLine = () => ({ key: uid('l'), materialId: '', qty: '', price: '', newName: '', unit: 'NOS', category: '' })
 
-function EntryForm({ kind: k0 = 'issue', prefill, onClose }) {
+const ENTRY_FIELDS = { date: 'Date', vendor: 'Supplier', billNo: 'Bill no.', reqNo: 'Request no.', reqName: 'Requested by', project: 'Project', engineer: 'Site engineer', mtn: 'MTN', note: 'Note' }
+
+function EntryForm({ kind: k0 = 'issue', prefill, editId, onClose }) {
   const { db, update, toast, saveFile } = useApp()
-  const bal = useMemo(() => balances(db), [db])
-  const [kind, setKind] = useState(prefill?.kind || k0)
-  const [f, setF] = useState(() => ({
-    date: TODAY, reqNo: prefill?.reqNo || '', reqName: prefill?.reqName || '', vendor: prefill?.vendor || '', billNo: prefill?.billNo || '',
-    project: prefill?.project || '', engineer: prefill?.engineer || '', mtn: prefill?.mtn || '', note: '',
-  }))
-  const [lines, setLines] = useState(() => (prefill?.lines?.length ? prefill.lines.map((l) => ({ ...blankLine(), ...l })) : [blankLine()]))
+  const orig = editId ? db.movements.find((x) => x.id === editId) : null
+  // when editing, the entry's own quantities are given back first, so the stock checks see the stock without it
+  const bal = useMemo(() => { const b = balances(db); if (orig && !orig.cancelled) orig.lines.forEach((l) => { b[l.materialId] -= KINDS[orig.kind].sign * l.qty }); return b }, [db, orig])
+  const [kind, setKind] = useState(orig?.kind || prefill?.kind || k0)
+  const [f, setF] = useState(() => {
+    const src = orig || prefill || {}
+    return Object.fromEntries(Object.keys(ENTRY_FIELDS).map((k) => [k, src[k] || (k === 'date' ? TODAY : '')]))
+  })
+  const [lines, setLines] = useState(() => (orig ? orig.lines.map((l) => ({ ...blankLine(), materialId: l.materialId, qty: String(l.qty), price: l.unitPrice == null ? '' : String(l.unitPrice) }))
+    : prefill?.lines?.length ? prefill.lines.map((l) => ({ ...blankLine(), ...l })) : [blankLine()]))
   const [files, setFiles] = useState([])
   const [sentence, setSentence] = useState('')
   const [scanning, setScanning] = useState(false)
@@ -116,14 +121,18 @@ function EntryForm({ kind: k0 = 'issue', prefill, onClose }) {
       created[normName(name)] ||= { id: uid('m'), name, category: l.category, unit: l.unit || 'NOS', opening: 0, min: 0, createdAt: new Date().toISOString(), createdBy: db.settings.managerName || 'Manager' }
     }
     const newMats = Object.values(created)
+    const by = db.settings.managerName || 'Manager'
+    const newLines = valid.map((l) => {
+      const materialId = l.materialId || created[normName(l.newName)].id, qty = Number(l.qty)
+      const was = orig?.lines.find((o) => o.materialId === materialId)
+      if (kind === 'purchase') return { materialId, qty, unitPrice: round2(Number(l.price)) }
+      // a stock out keeps the cost saved when it was made; only a missing cost is filled in
+      if (kind === 'issue') return { materialId, qty, unitCost: was?.unitCost ?? unitCost(db, materialId) }
+      return { materialId, qty, unitCost: was?.unitCost ?? returnCost(db, f.project, materialId) }
+    })
+    if (orig) return saveEdit(newLines, newMats, by)
     const no = nextNo(db, kind)
-    const mv = {
-      id: uid('mv'), no, kind, ...f, attachments: files, cancelled: false, createdAt: new Date().toISOString(),
-      lines: valid.map((l) => {
-        const materialId = l.materialId || created[normName(l.newName)].id, qty = Number(l.qty)
-        return kind === 'purchase' ? { materialId, qty, unitPrice: round2(Number(l.price)) } : kind === 'issue' ? { materialId, qty, unitCost: unitCost(db, materialId) } : { materialId, qty }
-      }),
-    }
+    const mv = { id: uid('mv'), no, kind, ...f, attachments: files, cancelled: false, createdAt: new Date().toISOString(), createdBy: by, lines: newLines }
     update((d) => {
       d.materials.push(...newMats)
       d.movements.push(mv)
@@ -135,12 +144,36 @@ function EntryForm({ kind: k0 = 'issue', prefill, onClose }) {
       kind === 'issue' ? { label: 'Download voucher', run: () => downloadVoucher(mv, db, toast) } : undefined)
     onClose()
   }
+  const saveEdit = (newLines, newMats, by) => {
+    const nm = (id) => db.materials.find((m) => m.id === id)?.name || newMats.find((m) => m.id === id)?.name
+    const price = (x) => (x == null ? 'not set' : 'SAR ' + fmt2(x))
+    const changes = Object.entries(ENTRY_FIELDS).filter(([k]) => (orig[k] || '') !== (f[k] || '')).map(([k, label]) => `${label}: ${orig[k] || '—'} → ${f[k] || '—'}`)
+    newLines.forEach((l) => {
+      const o = orig.lines.find((x) => x.materialId === l.materialId)
+      if (!o) return changes.push(`Added ${fmtNum(l.qty)} × ${nm(l.materialId)}${kind === 'purchase' ? ` at ${price(l.unitPrice)}` : ''}`)
+      if (o.qty !== l.qty) changes.push(`${nm(l.materialId)}: quantity ${fmtNum(o.qty)} → ${fmtNum(l.qty)}`)
+      if (kind === 'purchase' && o.unitPrice !== l.unitPrice) changes.push(`${nm(l.materialId)}: unit price ${price(o.unitPrice)} → ${price(l.unitPrice)}`)
+      if (kind === 'issue' && o.unitCost == null && l.unitCost != null) changes.push(`${nm(l.materialId)}: unit cost set to ${price(l.unitCost)}`)
+    })
+    orig.lines.filter((o) => !newLines.some((l) => l.materialId === o.materialId)).forEach((o) => changes.push(`Removed ${nm(o.materialId)}`))
+    if (!changes.length) { toast('Nothing was changed.'); return onClose() }
+    update((d) => {
+      d.materials.push(...newMats)
+      const x = d.movements.find((y) => y.id === orig.id)
+      Object.assign(x, f, { lines: newLines, history: [...(x.history || []), { at: new Date().toISOString(), by, changes }] })
+      if (f.project && !d.projects.includes(f.project)) d.projects.push(f.project)
+      if (f.vendor && !d.vendors.includes(f.vendor)) d.vendors.push(f.vendor)
+      if (f.engineer && !d.engineers.includes(f.engineer)) d.engineers.push(f.engineer)
+    }, `${orig.no} edited: ${changes.join('; ')}`, 'edit')
+    toast(`${orig.no} updated. ${changes.length} change${changes.length > 1 ? 's' : ''} saved in its history.`)
+    onClose()
+  }
 
   const Icon = kind === 'purchase' ? PackagePlus : kind === 'return' ? Undo2 : PackageMinus
   return (
-    <Modal title={K.group === 'in' ? 'Stock in' : 'Stock out'} sub={K.group === 'in' ? 'Materials coming INTO the warehouse. Stock goes up.' : 'Materials going OUT to a site. Stock goes down.'} icon={Icon} tone={K.group === 'in' ? 'ok' : 'warn'} onClose={onClose} width={820}
-      footer={<><span className="grow muted small">Number <b className="mono">{nextNo(db, kind)}</b> will be given automatically</span><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save} disabled={blocking}>Save {K.group === 'in' ? 'stock in' : 'stock out'}</Btn></>}>
-      <div className="seg3">
+    <Modal title={orig ? `Edit ${K.group === 'in' ? 'stock in' : 'stock out'}` : K.group === 'in' ? 'Stock in' : 'Stock out'} sub={orig ? `${orig.no} · ${K.label}. Every change is kept in the entry's history.` : K.group === 'in' ? 'Materials coming INTO the warehouse. Stock goes up.' : 'Materials going OUT to a site. Stock goes down.'} icon={Icon} tone={K.group === 'in' ? 'ok' : 'warn'} onClose={onClose} width={820}
+      footer={<><span className="grow muted small">{orig ? <>Editing <b className="mono">{orig.no}</b></> : <>Number <b className="mono">{nextNo(db, kind)}</b> will be given automatically</>}</span><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save} disabled={blocking}>{orig ? 'Save changes' : `Save ${K.group === 'in' ? 'stock in' : 'stock out'}`}</Btn></>}>
+      {!orig && <><div className="seg3">
         {['purchase', 'return', 'issue'].map((x) => {
           const I = x === 'purchase' ? PackagePlus : x === 'return' ? Undo2 : PackageMinus
           return <button key={x} className={cx('seg3-b', kind === x && 'on', 'k-' + x)} onClick={() => setKind(x)}><I size={18} /><span><b>{KINDS[x].label}</b><small>{x === 'purchase' ? 'From a supplier' : x === 'return' ? 'Back from a site' : 'To a project / site'}</small></span></button>
@@ -161,7 +194,7 @@ function EntryForm({ kind: k0 = 'issue', prefill, onClose }) {
             {scanning && <span className="scanline" />}
           </label>
         )}
-      </div>
+      </div></>}
 
       <div className="fgrid">
         <Field label="Date"><input type="date" value={f.date} max={TODAY} onChange={(e) => set('date', e.target.value)} /></Field>
@@ -202,6 +235,7 @@ function EntryForm({ kind: k0 = 'issue', prefill, onClose }) {
               {kind === 'purchase' ? <input list="dl-mats" value={m ? m.name : l.newName} onChange={(e) => pickByName(l.key, e.target.value)} placeholder="Type or choose a material…" aria-label="Material" />
                 : <select value={l.materialId} onChange={(e) => setLine(l.key, { materialId: e.target.value })}>
                   <option value="">Choose material…</option>
+                  {m && !mats.includes(m) && <option value={m.id}>{m.name}</option>}
                   {cats.map((c) => (
                     <optgroup key={c} label={c}>{mats.filter((x) => x.category === c).map((x) => <option key={x.id} value={x.id} disabled={x.id !== l.materialId && lines.some((y) => y.materialId === x.id)}>{x.name}</option>)}</optgroup>
                   ))}
@@ -254,9 +288,18 @@ function MovementDrawer({ id, onClose }) {
       {mv.cancelled && <div className="banner bad"><Ban size={18} /><div><b>This entry was cancelled.</b> Reason: {mv.cancelReason}. It no longer counts in stock.</div></div>}
       <dl className="kv">{rows.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}</dl>
       <h4 className="sec">Materials</h4>
-      <table className="tbl"><thead><tr><th>Material</th><th className="r">Quantity</th></tr></thead>
-        <tbody>{mv.lines.map((l, i) => { const m = db.materials.find((x) => x.id === l.materialId); return <tr key={i} className="click" onClick={() => open('material', { id: m.id })}><td>{m?.name}</td><td className="r num"><b>{K.sign > 0 ? '+' : '−'}{fmtNum(l.qty)}</b> {m?.unit}</td></tr> })}</tbody></table>
-      {mv.kind === 'issue' && <Btn kind="dark" size="sm" icon={Download} onClick={() => downloadVoucher(mv, db, toast)}>Download voucher</Btn>}
+      <table className="tbl"><thead><tr><th>Material</th><th className="r">Quantity</th>{mv.kind === 'purchase' && <th className="r">Unit price</th>}</tr></thead>
+        <tbody>{mv.lines.map((l, i) => { const m = db.materials.find((x) => x.id === l.materialId); return <tr key={i} className="click" onClick={() => open('material', { id: m.id })}><td>{m?.name}</td><td className="r num"><b>{K.sign > 0 ? '+' : '−'}{fmtNum(l.qty)}</b> {m?.unit}</td>
+          {mv.kind === 'purchase' && <td className="r num">{l.unitPrice == null ? <Pill tone="warn">Price missing</Pill> : `SAR ${fmt2(l.unitPrice)}`}</td>}</tr> })}</tbody></table>
+      <div className="row-gap">
+        {!mv.cancelled && <Btn kind="ghost" size="sm" icon={Pencil} onClick={() => open('entry', { editId: mv.id })}>Edit</Btn>}
+        {mv.kind === 'issue' && <><Btn kind="dark" size="sm" icon={Download} onClick={() => downloadVoucher(mv, db, toast)}>Download voucher</Btn><Btn kind="ghost" size="sm" icon={Printer} onClick={() => downloadVoucher(mv, db, toast, false, true)}>Print voucher</Btn></>}
+      </div>
+      {mv.history?.length > 0 && <><h4 className="sec">Changes</h4>
+        <ul className="condlog">{[...mv.history].reverse().map((h, i) => (
+          <li key={i}><div className="row"><span className="muted small num">{new Date(h.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span><span className="grow" /><span className="muted small">{h.by}</span></div>
+            {h.changes.map((c, j) => <span key={j}>{c}</span>)}</li>
+        ))}</ul></>}
       {mv.attachments?.length > 0 && <><h4 className="sec">Attachments</h4>{mv.attachments.map((a) => <FileSlot key={a.id} label="Vendor bill" fileRef={a} onUpload={() => {}} />)}</>}
       {!mv.cancelled && (
         <div className="danger-zone">
@@ -288,7 +331,12 @@ function MaterialDrawer({ id, onClose }) {
     return { mv, q, run }
   }).reverse()
   return (
-    <Drawer title={m.name} sub={`${m.category} · counted in ${m.unit}`} badge={<Pill tone={STOCK_STATUS[st].tone} dot>{STOCK_STATUS[st].label}</Pill>} onClose={onClose}>
+    <Drawer title={m.name} sub={`${m.category} · counted in ${m.unit}`} badge={isTool(m) ? <Pill tone="plain">Tool (archived)</Pill> : m.active === false ? <Pill tone="plain">Deactivated</Pill> : <Pill tone={STOCK_STATUS[st].tone} dot>{STOCK_STATUS[st].label}</Pill>} onClose={onClose}>
+      {!isTool(m) && <div className="row-gap">
+        <Btn kind="ghost" size="sm" icon={Pencil} onClick={() => open('materialForm', { id })}>Edit</Btn>
+        <Btn kind="ghost" size="sm" icon={Ban} onClick={() => { const on = m.active === false; update((d) => { d.materials.find((x) => x.id === id).active = on }, `${m.name} ${on ? 'reactivated' : 'deactivated'}`); toast(on ? `${m.name} is back in the lists` : `${m.name} deactivated. Its history is kept.`) }}>{m.active === false ? 'Reactivate' : 'Deactivate'}</Btn>
+        {m.createdBy && <span className="muted small">Added by {m.createdBy} on {fmtDate(m.createdAt.slice(0, 10))}</span>}
+      </div>}
       <div className="stats3">
         <div><span>In stock now</span><b>{fmtNum(bal[m.id])}<small> {m.unit}</small></b></div>
         <div><span>Used per week</span><b>{fmtNum(Math.round(rate * 7 * 10) / 10)}</b></div>
@@ -311,26 +359,34 @@ function MaterialDrawer({ id, onClose }) {
   )
 }
 
-function MaterialForm({ onClose }) {
+function MaterialForm({ id, onClose }) {
   const { db, update, toast } = useApp()
+  const ed = id ? db.materials.find((m) => m.id === id) : null
   const cats = [...new Set(stockMaterials(db).map((m) => m.category))]
-  const [f, setF] = useState({ name: '', category: cats[0], unit: 'NOS', opening: '' })
+  const [f, setF] = useState(() => (ed ? { name: ed.name, category: ed.category, unit: ed.unit } : { name: '', category: cats[0], unit: 'NOS', opening: '' }))
   const [err, setErr] = useState('')
   const save = () => {
-    if (!f.name.trim()) return setErr('Enter the material name.')
-    if (db.materials.some((m) => normName(m.name) === normName(f.name))) return setErr('That material already exists.')
+    const name = f.name.trim().replace(/\s+/g, ' ')
+    if (name.length < 2 || name.length > 120) return setErr('The material name must be 2 to 120 characters.')
+    if (db.materials.some((m) => m.id !== id && normName(m.name) === normName(name))) return setErr('That material already exists.')
     if (normName(f.category) === 'tools') return setErr('Tools are managed in Hand tools, not the Warehouse.')
-    update((d) => { d.materials.push({ id: uid('m'), name: f.name.trim(), category: f.category || 'General', unit: f.unit, opening: Number(f.opening) || 0, min: 0 }) }, `New material added: ${f.name.trim()}`, 'add')
+    if (ed) {
+      const changes = [['name', 'name'], ['category', 'category'], ['unit', 'unit']].filter(([k]) => ed[k] !== (k === 'name' ? name : f[k])).map(([k, l]) => `${l} ${ed[k]} → ${k === 'name' ? name : f[k]}`)
+      if (changes.length) update((d) => { Object.assign(d.materials.find((m) => m.id === id), { name, category: f.category || 'General', unit: f.unit }) }, `${ed.name}: ${changes.join(', ')}`)
+      toast(changes.length ? 'Material updated' : 'Nothing was changed.'); return onClose()
+    }
+    update((d) => { d.materials.push({ id: uid('m'), name, category: f.category || 'General', unit: f.unit, opening: Number(f.opening) || 0, min: 0, createdAt: new Date().toISOString(), createdBy: db.settings.managerName || 'Manager' }) }, `New material added: ${name}`, 'add')
     toast('Material added'); onClose()
   }
+  const units = [...new Set(['NOS', 'ROLL', 'BAG', 'BOX', 'SQM', 'M', 'KG', 'LTR', 'SET', ...(ed ? [ed.unit] : [])])]
   return (
-    <Modal title="Add a new material" sub="Add it once, then pick it from the list every time" icon={Package} onClose={onClose} width={560}
-      footer={<><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}>Add material</Btn></>}>
+    <Modal title={ed ? 'Edit material' : 'Add a new material'} sub={ed ? 'Old entries show the new name too' : 'Add it once, then pick it from the list every time'} icon={Package} onClose={onClose} width={560}
+      footer={<><Btn kind="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={save}>{ed ? 'Save changes' : 'Add material'}</Btn></>}>
       <div className="fgrid">
         <Field label="Material name" span={2}><input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder='e.g. 2" PVC Bend' autoFocus /></Field>
         <Field label="Category"><input list="dl-cats" value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })} /></Field>
-        <Field label="Unit"><select value={f.unit} onChange={(e) => setF({ ...f, unit: e.target.value })}>{['NOS', 'ROLL', 'BAG', 'BOX', 'SQM', 'M', 'KG', 'LTR', 'SET'].map((u) => <option key={u}>{u}</option>)}</select></Field>
-        <Field label="Stock you have now"><input type="number" min="0" value={f.opening} onChange={(e) => setF({ ...f, opening: e.target.value })} placeholder="0" /></Field>
+        <Field label="Unit"><select value={f.unit} onChange={(e) => setF({ ...f, unit: e.target.value })}>{units.map((u) => <option key={u}>{u}</option>)}</select></Field>
+        {!ed && <Field label="Stock you have now"><input type="number" min="0" value={f.opening} onChange={(e) => setF({ ...f, opening: e.target.value })} placeholder="0" /></Field>}
       </div>
       <datalist id="dl-cats">{cats.map((c) => <option key={c} value={c} />)}</datalist>
       {err && <div className="formerr"><AlertTriangle size={16} />{err}</div>}

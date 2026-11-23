@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { PackagePlus, PackageMinus, Plus, Search, Boxes, ArrowDownToLine, ArrowUpFromLine, FileSpreadsheet, Package, Download, AlertTriangle } from 'lucide-react'
-import { downloadVoucher } from '../exporter'
+import { downloadVoucher, exportExcel } from '../exporter'
 import { useApp } from '../store'
-import { KINDS, STOCK_STATUS, fmtDate, fmtNum, daysUntil, lowLimit } from '../data'
+import { KINDS, STOCK_STATUS, fmtDate, fmtNum, daysUntil, lowLimit, stockValue, fmt2, TODAY } from '../data'
 import { insights } from '../ai'
 import { PageHeader, Tabs, Btn, Pill, Empty, AiTag, cx } from '../ui'
 
@@ -35,7 +35,7 @@ export default function Warehouse() {
 }
 
 function StockLevels({ ins }) {
-  const { db, open, go } = useApp()
+  const { db, open, toast } = useApp()
   const [q, setQ] = useState('')
   const [cat, setCat] = useState('All')
   const [st, setSt] = useState('all')
@@ -44,12 +44,17 @@ function StockLevels({ ins }) {
   const rows = ins.fc.filter((f) => (cat === 'All' || f.m.category === cat) && (st === 'all' || (st === 'low' ? f.status !== 'ok' : f.status === st)) && f.m.name.toLowerCase().includes(q.toLowerCase()))
   const counts = { low: ins.fc.filter((f) => f.status === 'low').length, out: ins.fc.filter((f) => f.status === 'out').length }
   const month = db.movements.filter((m) => !m.cancelled && daysUntil(m.date) >= -30).length
+  const sv = stockValue(db)
+  const exportList = () => exportExcel({ title: 'Stock levels', sub: `As of ${fmtDate(TODAY)}${cat !== 'All' ? ' · ' + cat : ''}${st !== 'all' ? ' · ' + (st === 'low' ? 'Low or out' : STOCK_STATUS[st].label) : ''}`, fname: `TI_Stock_levels_${TODAY}`, sheet: 'Stock levels',
+    sections: [{ columns: ['Material', 'Category', 'Unit', 'In stock', 'Status'], rows: rows.map((f) => [f.m.name, f.m.category, f.m.unit, f.bal, STOCK_STATUS[f.status].label]) }] })
+    .then(() => toast('Excel file downloaded'), () => toast("Couldn't make the Excel file. Please try again.", 'bad'))
   return <>
-    <div className="kpis">
+    <div className="kpis five">
       <Kpi label="Materials" value={ins.fc.length} sub={`in ${cats.length - 1} categories`} />
       <Kpi label="Running low" value={counts.low} sub={`below ${limit}`} tone={counts.low ? 'warn' : ''} onClick={() => setSt('low')} />
       <Kpi label="Out of stock" value={counts.out} sub="nothing left" tone={counts.out ? 'bad' : ''} onClick={() => setSt('out')} />
       <Kpi label="Entries this month" value={month} sub="in and out" />
+      <Kpi label="Total stock value" value={`SAR ${fmt2(sv.total)}`} sub={`from ${sv.count} purchase${sv.count === 1 ? '' : 's'}${sv.unpriced ? ` · ${sv.unpriced} ha${sv.unpriced === 1 ? 's' : 've'} no price` : ''}`} tone={sv.unpriced ? 'warn' : ''} />
     </div>
     {counts.low + counts.out > 0 && st !== 'low' && (
       <div className="banner warn"><AlertTriangle size={18} /><div className="grow"><b>{counts.low + counts.out} material{counts.low + counts.out > 1 ? 's are' : ' is'} running low</b> (below {limit}).</div>
@@ -61,7 +66,7 @@ function StockLevels({ ins }) {
         <div className="chips">{cats.map((c) => <button key={c} className={cx('chip', cat === c && 'on')} onClick={() => setCat(c)}>{c}</button>)}</div>
         <select className="sel" value={st} onChange={(e) => setSt(e.target.value)}><option value="all">All statuses</option><option value="low">Low or out</option><option value="ok">In stock</option><option value="out">Out of stock</option></select>
         <Btn kind="ghost" size="sm" icon={Plus} onClick={() => open('materialForm')}>New material</Btn>
-        <Btn kind="ghost" size="sm" icon={FileSpreadsheet} onClick={() => go('reports')}>Export</Btn>
+        <Btn kind="ghost" size="sm" icon={FileSpreadsheet} onClick={exportList} disabled={!rows.length}>Export</Btn>
       </div>
       <div className="tablewrap">
         <table className="tbl big">
@@ -110,7 +115,7 @@ function MovementList({ list, kinds }) {
           <tbody>
             {rows.map((mv) => (
               <tr key={mv.id} className={cx('click', mv.cancelled && 'struck')} onClick={() => open('movement', { id: mv.id })}>
-                <td><span className="mono">{mv.no}</span>{mv.cancelled && <Pill tone="bad">Cancelled</Pill>}</td>
+                <td><span className="mono">{mv.no}</span>{mv.cancelled && <Pill tone="bad">Cancelled</Pill>}{!mv.cancelled && mv.kind === 'purchase' && mv.lines.some((l) => l.unitPrice == null) && <Pill tone="warn">Price missing</Pill>}</td>
                 <td className="num nowrap">{fmtDate(mv.date)}</td>
                 {!isOut && <td><Pill tone={KINDS[mv.kind].tone}>{mv.kind === 'purchase' ? 'Purchase' : 'Return'}</Pill></td>}
                 <td><b>{mv.kind === 'purchase' ? mv.vendor : mv.project}</b></td>

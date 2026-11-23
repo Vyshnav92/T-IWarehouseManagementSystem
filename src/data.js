@@ -131,14 +131,32 @@ export const lowLimit = (db) => db.settings.lowStock ?? 15
 export const stockStatus = (bal, limit) => (bal <= 0 ? 'out' : bal < limit ? 'low' : 'ok')
 /** Tools were moved out of the Warehouse (R4). Their items stay in db.materials so old entries still show them. */
 export const isTool = (m) => m.category === 'Tools'
-export const stockMaterials = (db) => db.materials.filter((m) => !isTool(m))
+export const stockMaterials = (db) => db.materials.filter((m) => !isTool(m) && m.active !== false) // deactivated materials keep their history
 /** Same name ignoring capitals, extra spaces and punctuation. */
 export const normName = (s) => String(s).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
-/** Current unit cost: weighted average of the material's purchase prices. null when it was never bought with a price. */
+/** Current unit cost: weighted average of the material's purchase prices (and opening stock, when it has an opening cost). null when nothing has a price. */
 export function unitCost(db, materialId) {
+  const m = db.materials.find((x) => x.id === materialId)
   let q = 0, v = 0
+  if (m?.openingCost != null && m.opening > 0) { q = m.opening; v = m.opening * m.openingCost }
   db.movements.forEach((mv) => { if (!mv.cancelled && mv.kind === 'purchase') mv.lines.forEach((l) => { if (l.materialId === materialId && l.unitPrice != null) { q += l.qty; v += l.qty * l.unitPrice } }) })
   return q ? round2(v / q) : null
+}
+/** A return is valued at the cost of the last stock out of that material to the same site, otherwise at the current unit cost. */
+export function returnCost(db, project, materialId) {
+  const line = db.movements.filter((mv) => !mv.cancelled && mv.kind === 'issue' && mv.project === project).flatMap((mv) => mv.lines).filter((l) => l.materialId === materialId && l.unitCost != null).pop()
+  return line ? line.unitCost : unitCost(db, materialId)
+}
+/** Total stock value (R5): every purchase line value added together. Returns and stock outs don't change it; tools and lines without a price are left out. */
+export function stockValue(db) {
+  const ps = db.movements.filter((mv) => !mv.cancelled && mv.kind === 'purchase')
+  const tool = new Set(db.materials.filter(isTool).map((m) => m.id))
+  const lines = (mv) => mv.lines.filter((l) => !tool.has(l.materialId))
+  return {
+    count: ps.length,
+    unpriced: ps.filter((mv) => lines(mv).some((l) => l.unitPrice == null)).length,
+    total: round2(ps.reduce((a, mv) => a + lines(mv).reduce((b, l) => b + (l.unitPrice == null ? 0 : round2(l.qty * l.unitPrice)), 0), 0)),
+  }
 }
 /** Value of a stock out from the unit cost saved on each line when it was made. Lines without a cost are counted in `missing`. */
 export function issueValue(mv) {
@@ -348,6 +366,7 @@ export function sampleDB() {
   // Tools are left without a price, so old tool entries show "Price not set".
   const pr = rng(4242)
   const basePrice = Object.fromEntries(materials.map((m) => [m.id, round2(3 + pr() * 60)]))
+  materials.forEach((m) => { if (!isTool(m)) m.openingCost = basePrice[m.id] })
   const cost = {} // id -> { q, v }
   movements.forEach((mv) => mv.lines.forEach((l) => {
     const m = materials.find((x) => x.id === l.materialId)
