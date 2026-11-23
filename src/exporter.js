@@ -59,6 +59,53 @@ export async function exportPdf({ title, sub, sections, fname, print = false, mo
   } else doc.save(fname + '.pdf')
 }
 
+/** Stock out voucher: one entry, items only. It never shows a price or value (R6). */
+export async function exportVoucher(mv, materials) {
+  const [{ jsPDF }, { default: autoTable }] = await Promise.all([import('jspdf'), import('jspdf-autotable')])
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' })
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight()
+  const date = new Date(mv.date + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+  try { doc.addImage(await toDataUrl(logoLight), 'PNG', 36, 26, 110, 49) } catch { /* logo optional */ }
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(29, 31, 35); doc.text('STOCK OUT VOUCHER', W - 36, 46, { align: 'right' })
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(110, 115, 122); doc.text(`No. ${mv.no}     Date ${date}`, W - 36, 62, { align: 'right' })
+  if (mv.cancelled) { doc.setFont('helvetica', 'bold'); doc.setTextColor(200, 16, 46); doc.text('CANCELLED', W - 36, 76, { align: 'right' }) }
+  doc.setDrawColor(200, 16, 46); doc.setLineWidth(2); doc.line(36, 86, W - 36, 86)
+  const meta = [['Project', mv.project], ['Request no.', mv.reqNo], ['Requested by', mv.reqName], ['Site engineer', mv.engineer], ['MTN', mv.mtn]]
+  let y = 108
+  doc.setFontSize(10)
+  meta.forEach(([k, v], i) => {
+    const x = i % 2 ? W / 2 + 10 : 36
+    doc.setFont('helvetica', 'bold'); doc.setTextColor(110, 115, 122); doc.text(k + ':', x, y)
+    doc.setFont('helvetica', 'normal'); doc.setTextColor(29, 31, 35); doc.text(String(v || '—'), x + 80, y)
+    if (i % 2) y += 16
+  })
+  y += 16
+  if (mv.note) { doc.setTextColor(110, 115, 122); doc.text(doc.splitTextToSize('Note: ' + mv.note, W - 72), 36, y); y += 18 }
+  const mat = (id) => materials.find((m) => m.id === id) || {}
+  autoTable(doc, {
+    startY: y, head: [['#', 'Material', 'Unit', 'Qty']],
+    body: mv.lines.map((l, i) => [i + 1, mat(l.materialId).name || '', mat(l.materialId).unit || '', String(l.qty)]),
+    styles: { fontSize: 9.5, cellPadding: 6, lineColor: [230, 231, 234], lineWidth: 0.5 },
+    headStyles: { fillColor: [31, 33, 37], textColor: 255, fontStyle: 'bold' }, alternateRowStyles: { fillColor: [249, 249, 250] },
+    columnStyles: { 0: { cellWidth: 30 }, 2: { cellWidth: 60 }, 3: { cellWidth: 60, halign: 'right' } },
+    margin: { left: 36, right: 36, top: 50, bottom: 50 },
+  })
+  y = doc.lastAutoTable.finalY + 60
+  if (y > H - 70) { doc.addPage(); y = 90 }
+  doc.setFontSize(10); doc.setTextColor(29, 31, 35)
+  doc.text('Issued by: ______________________', 36, y); doc.text('Received by: ______________________', W / 2 + 10, y)
+  const produced = `Produced on ${stamp()}`, n = doc.getNumberOfPages()
+  for (let p = 1; p <= n; p++) {
+    doc.setPage(p); doc.setFontSize(8); doc.setTextColor(150)
+    doc.text(`T&I Construction · ${mv.no} · ${produced}`, 36, H - 20); doc.text(`Page ${p} of ${n}`, W - 36, H - 20, { align: 'right' })
+  }
+  doc.save(`${mv.no} Voucher - ${mv.project || 'No project'}`.replace(/[\\/:*?"<>|]/g, '-') + '.pdf')
+}
+/** Download with a message either way, for every place that offers the voucher. */
+export const downloadVoucher = (mv, db, toast) => exportVoucher(mv, db.materials)
+  .then(() => toast(`${mv.no} voucher downloaded`))
+  .catch(() => toast(`Couldn't make the ${mv.no} voucher PDF. Please try again.`, 'bad'))
+
 function toDataUrl(src) {
   return new Promise((res, rej) => {
     if (src.startsWith('data:')) return res(src)

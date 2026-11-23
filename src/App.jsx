@@ -52,7 +52,7 @@ export default function App() {
       <Assistant />
       {!db.settings.tourDone && <Tour />}
       <DailyReminder />
-      <div className="toasts" aria-live="polite">{toasts.map((t) => <div key={t.id} className={cx('toast', 'toast-' + t.tone)}>{t.text}</div>)}</div>
+      <div className="toasts" aria-live="polite">{toasts.map((t) => <div key={t.id} className={cx('toast', 'toast-' + t.tone)}>{t.text}{t.action && <button className="toast-act" onClick={t.action.run}>{t.action.label}</button>}</div>)}</div>
     </div>
   )
 }

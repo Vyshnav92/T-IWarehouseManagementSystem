@@ -47,10 +47,10 @@ export function AppProvider({ children }) {
     return () => window.removeEventListener('hashchange', on)
   }, [])
 
-  const toast = useCallback((text, tone = 'ok') => {
+  const toast = useCallback((text, tone = 'ok', action) => {
     const id = uid('t')
-    setToasts((t) => [...t, { id, text, tone }])
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4200)
+    setToasts((t) => [...t, { id, text, tone, action }])
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), action ? 9000 : 4200)
   }, [])
 
   const update = useCallback((fn, logText, icon = 'edit') => {

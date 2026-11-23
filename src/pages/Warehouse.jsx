@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
-import { PackagePlus, PackageMinus, Plus, Search, Boxes, ArrowDownToLine, ArrowUpFromLine, Hammer, FileSpreadsheet, MapPin, Sparkles, Package, Pencil } from 'lucide-react'
+import { PackagePlus, PackageMinus, Plus, Search, Boxes, ArrowDownToLine, ArrowUpFromLine, Hammer, FileSpreadsheet, MapPin, Sparkles, Package, Pencil, Download } from 'lucide-react'
+import { downloadVoucher } from '../exporter'
 import { useApp } from '../store'
 import { KINDS, STOCK_STATUS, fmtDate, fmtNum, toolsAtSites, daysUntil, balances, TOOL_CONDITIONS, toolCondition } from '../data'
 import { insights } from '../ai'
@@ -84,7 +85,7 @@ function StockLevels({ ins }) {
 }
 
 function MovementList({ list, kinds }) {
-  const { db, open } = useApp()
+  const { db, open, toast } = useApp()
   const [q, setQ] = useState('')
   const [k, setK] = useState('all')
   const isOut = kinds[0] === 'issue'
@@ -101,7 +102,7 @@ function MovementList({ list, kinds }) {
       </div>
       <div className="tablewrap">
         <table className="tbl">
-          <thead><tr><th>No.</th><th>Date</th>{!isOut && <th>Type</th>}<th>{isOut ? 'Project / site' : 'From'}</th><th className="hide-sm">{isOut ? 'Site engineer' : 'Bill / MTN'}</th><th className="hide-sm">Req. no.</th><th>Materials</th></tr></thead>
+          <thead><tr><th>No.</th><th>Date</th>{!isOut && <th>Type</th>}<th>{isOut ? 'Project / site' : 'From'}</th><th className="hide-sm">{isOut ? 'Site engineer' : 'Bill / MTN'}</th><th className="hide-sm">Req. no.</th><th>Materials</th>{isOut && <th>Voucher</th>}</tr></thead>
           <tbody>
             {rows.map((mv) => (
               <tr key={mv.id} className={cx('click', mv.cancelled && 'struck')} onClick={() => open('movement', { id: mv.id })}>
@@ -112,6 +113,7 @@ function MovementList({ list, kinds }) {
                 <td className="hide-sm muted">{isOut ? mv.engineer : mv.billNo || (mv.mtn ? 'MTN ' + mv.mtn : '—')}</td>
                 <td className="hide-sm muted">{mv.reqNo || '—'}</td>
                 <td className="small">{mv.lines.slice(0, 2).map((l) => `${fmtNum(l.qty)} × ${name(l.materialId)}`).join(', ')}{mv.lines.length > 2 && <span className="muted"> +{mv.lines.length - 2} more</span>}</td>
+                {isOut && <td><button className="iconbtn sm" title="Download voucher" aria-label={`Download voucher ${mv.no}`} onClick={(e) => { e.stopPropagation(); downloadVoucher(mv, db, toast) }}><Download size={17} /></button></td>}
               </tr>
             ))}
           </tbody>
