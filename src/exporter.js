@@ -61,7 +61,7 @@ export async function exportPdf({ title, sub, sections, fname, print = false, mo
 }
 
 /** Stock out voucher (items only, never a price or value, R6) or, with invoice: true, the stock out invoice with the saved unit costs (R1). */
-export async function exportVoucher(mv, materials, invoice = false) {
+export async function exportVoucher(mv, materials, invoice = false, print = false) {
   const [{ jsPDF }, { default: autoTable }] = await Promise.all([import('jspdf'), import('jspdf-autotable')])
   const doc = new jsPDF({ unit: 'pt', format: 'a4' })
   const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight()
@@ -108,11 +108,13 @@ export async function exportVoucher(mv, materials, invoice = false) {
     doc.setPage(p); doc.setFontSize(8); doc.setTextColor(150)
     doc.text(`T&I Construction · ${mv.no} · ${produced}`, 36, H - 20); doc.text(`Page ${p} of ${n}`, W - 36, H - 20, { align: 'right' })
   }
-  doc.save(`${mv.no} ${invoice ? 'Invoice' : 'Voucher'} - ${mv.project || 'No project'}`.replace(/[\\/:*?"<>|]/g, '-') + '.pdf')
+  const fname = `${mv.no} ${invoice ? 'Invoice' : 'Voucher'} - ${mv.project || 'No project'}`.replace(/[\\/:*?"<>|]/g, '-') + '.pdf'
+  if (print) { doc.autoPrint(); if (window.open(doc.output('bloburl'), '_blank')) return } // pop-up blocked: download instead
+  doc.save(fname)
 }
 /** Download with a message either way, for every place that offers the voucher. */
-export const downloadVoucher = (mv, db, toast, invoice = false) => exportVoucher(mv, db.materials, invoice)
-  .then(() => toast(`${mv.no} ${invoice ? 'invoice' : 'voucher'} downloaded`))
+export const downloadVoucher = (mv, db, toast, invoice = false, print = false) => exportVoucher(mv, db.materials, invoice, print)
+  .then(() => toast(`${mv.no} ${invoice ? 'invoice' : 'voucher'} ${print ? 'opened for printing' : 'downloaded'}`))
   .catch(() => toast(`Couldn't make the ${mv.no} ${invoice ? 'invoice' : 'voucher'} PDF. Please try again.`, 'bad'))
 
 function toDataUrl(src) {
